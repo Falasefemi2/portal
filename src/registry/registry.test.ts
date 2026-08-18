@@ -57,13 +57,13 @@ describe("Registry", () => {
 
         const updated = yield* registry.updateDeploy(deployId1, {
           status: "succeeded",
-          artifactPath: "gs://bucket/acme/dep-1/artifact.tar.gz",
-          buildLogRef: "gs://bucket/acme/dep-1/build.log"
+          artifactPath: "acme/dep-1/artifact.tar.gz",
+          buildLogRef: "acme/dep-1/build.log"
         })
 
         expect(updated.status).toBe("succeeded")
-        expect(updated.artifactPath).toBe("gs://bucket/acme/dep-1/artifact.tar.gz")
-        expect(updated.buildLogRef).toBe("gs://bucket/acme/dep-1/build.log")
+        expect(updated.artifactPath).toBe("acme/dep-1/artifact.tar.gz")
+        expect(updated.buildLogRef).toBe("acme/dep-1/build.log")
       })
     )
   )

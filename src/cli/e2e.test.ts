@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest"
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
-import { Effect, Layer, Option, Sink, Stdio, Stream } from "effect"
+import { Effect, Layer, Sink, Stdio, Stream } from "effect"
 import { CliError } from "effect/unstable/cli"
 import { HttpServer } from "effect/unstable/http"
 import { layer as fileSystemLayer } from "@effect/platform-bun/BunFileSystem"
@@ -53,8 +53,11 @@ const capturingStdio = (lines: Array<string>): Layer.Layer<Stdio.Stdio> =>
 
 const withE2eCli = <A, E, R>(dataDir: string, out: Array<string>, effect: Effect.Effect<A, E, R>) => {
   const runtimeConfig = RuntimeConfig.of({
-    gcsBucket: "e2e-bucket",
-    googleProjectId: Option.none(),
+    supabaseProjectRef: "test-project",
+    supabaseAccessKeyId: "test-access",
+    supabaseSecretAccessKey: "test-secret",
+    supabaseBucket: "e2e-bucket",
+    supabaseS3Region: "us-east-1",
     databaseUrl: "postgres://unused",
     port: 8080,
     dataDir

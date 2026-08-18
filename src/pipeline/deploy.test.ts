@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest"
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
-import { Effect, FileSystem, Layer, Option, Sink, Stream } from "effect"
+import { Effect, FileSystem, Layer, Sink, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { layer as fileSystemLayer } from "@effect/platform-bun/BunFileSystem"
 import { list as tarList } from "tar"
@@ -94,8 +94,11 @@ const withDeploy = <A, E, R>(
 ) => {
   const { spawner, commands } = makeFakeSpawner(opts.script)
   const runtimeConfig = RuntimeConfig.of({
-    gcsBucket: "test-bucket",
-    googleProjectId: Option.none(),
+    supabaseProjectRef: "test-project",
+    supabaseAccessKeyId: "test-access",
+    supabaseSecretAccessKey: "test-secret",
+    supabaseBucket: "test-bucket",
+    supabaseS3Region: "us-east-1",
     databaseUrl: "sqlite::memory:",
     port: 8080,
     dataDir

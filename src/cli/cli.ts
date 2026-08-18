@@ -1,6 +1,8 @@
-import { resolve } from "node:path"
+import { join, resolve } from "node:path"
+import { layer as bunHttpServerLayer } from "@effect/platform-bun/BunHttpServer"
 import { Effect, Exit, FileSystem, Scope, Stdio, Stream } from "effect"
 import { Argument, CliError, Command } from "effect/unstable/cli"
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { RuntimeConfig } from "../config/runtime.js"
 import { type DeployError } from "../core/errors.js"
 import { makeDeployId } from "../core/model.js"
@@ -22,15 +24,54 @@ const deployErrorMessage = (error: DeployError): string => {
     case "BuildFailed":
       return `build failed for ${error.project} (exit ${error.exitCode})`
     case "PackageFailed":
-      return `failed to package build output for ${error.project}`
+      return `failed to package build output for ${error.project}: ${describeError(error.cause)}`
     case "UploadFailed":
-      return `failed to upload artifact for ${error.project} (${error.deployId})`
+      return `failed to upload artifact for ${error.project} (${error.deployId}): ${describeError(error.cause)}`
     case "DeployNotFound":
       return `deploy ${error.deployId} not found`
     case "RegistryError":
-      return `deploy registry error during ${error.operation}`
+      return `deploy registry error during ${error.operation}: ${describeError(error.cause)}`
   }
 }
+
+const describeError = (cause: unknown): string => {
+  if (cause instanceof Error) {
+    const inner = describeError((cause as { cause?: unknown }).cause)
+    return inner === "" ? cause.message : `${cause.message}: ${inner}`
+  }
+  return cause === undefined ? "" : String(cause)
+}
+
+const isRemoteUrl = (input: string): boolean => /^(https?:\/\/|git@|ssh:\/\/)/.test(input)
+
+const cloneRepo = Effect.fn("Cli.cloneRepo")(function* (url: string) {
+  const fs = yield* FileSystem.FileSystem
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+  const runtime = yield* RuntimeConfig
+
+  const clonesRoot = join(runtime.dataDir, "clones")
+  const safeName = url.replace(/^https?:\/\//, "").replace(/[^A-Za-z0-9._-]/g, "-").replace(/\.git$/, "")
+  const target = join(clonesRoot, safeName)
+
+  yield* fs.remove(target, { recursive: true, force: true }).pipe(Effect.orElseSucceed(() => undefined))
+  yield* fs.makeDirectory(clonesRoot, { recursive: true })
+
+  const exitCode = yield* Effect.scoped(
+    Effect.gen(function* () {
+      const handle = yield* spawner.spawn(
+        ChildProcess.make("git", ["clone", "--depth", "1", url, target], {})
+      )
+      return yield* handle.exitCode
+    })
+  )
+  if (exitCode !== ChildProcessSpawner.ExitCode(0)) {
+    return yield* new CliError.UserError({
+      cause: new Error(`git clone failed for ${url} (exit ${exitCode})`),
+      userMessage: `failed to clone ${url}`
+    })
+  }
+  return target
+})
 
 const toUserError = (cause: DeployError) =>
   new CliError.UserError({ cause, userMessage: deployErrorMessage(cause) })
@@ -47,7 +88,8 @@ const parseDeployId = (deployId: string) =>
 
 export const deploy = Effect.fn("Cli.deploy")(function* (path: string) {
   const service = yield* DeployService
-  const record = yield* service.deploy(resolve(path)).pipe(Effect.mapError(toUserError))
+  const rootDir = yield* isRemoteUrl(path) ? cloneRepo(path) : Effect.succeed(resolve(path))
+  const record = yield* service.deploy(rootDir).pipe(Effect.mapError(toUserError))
   yield* writeLine(`deployed ${record.project} (${record.deployId}) at ${record.gitSha}`)
 })
 
@@ -110,8 +152,11 @@ export const serveCli = Effect.fn("Cli.serve")(function* () {
   const runtime = yield* RuntimeConfig
   yield* writeLine(`portal listening on http://localhost:${runtime.port}`)
   const scope = yield* Scope.make()
-  yield* serve().pipe(
+  const serving = serve().pipe(
     Effect.provideService(Scope.Scope, scope),
+    Effect.andThen(Effect.never)
+  )
+  return yield* Effect.provide(bunHttpServerLayer({ port: runtime.port }))(serving).pipe(
     Effect.ensuring(Scope.close(scope, Exit.void))
   )
 })

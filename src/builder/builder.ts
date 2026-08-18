@@ -129,19 +129,43 @@ export const layer = Layer.effect(
           log: cause instanceof Error ? cause.message : String(cause)
         })
 
-      const commandValue = ChildProcess.make(command, { cwd: rootDir, shell: true })
-      const { log, exitCode } = yield* Effect.gen(function* () {
-        const handle = yield* spawner.spawn(commandValue)
-        const chunks = yield* handle.all.pipe(Stream.decodeText(), Stream.runCollect)
-        const exitCode = yield* handle.exitCode
-        return { log: chunks.join(""), exitCode }
-      }).pipe(Effect.mapError(toBuildFailed), Effect.scoped)
+      const runCommand = Effect.fn("Builder.runCommand")(function* (cmd: string) {
+        const commandValue = ChildProcess.make(cmd, { cwd: rootDir, shell: true })
+        return yield* Effect.gen(function* () {
+          const handle = yield* spawner.spawn(commandValue)
+          const chunks = yield* handle.all.pipe(Stream.decodeText(), Stream.runCollect)
+          const exitCode = yield* handle.exitCode
+          return { log: chunks.join(""), exitCode }
+        }).pipe(Effect.scoped)
+      })
 
-      if (exitCode !== ChildProcessSpawner.ExitCode(0)) {
-        return yield* new BuildFailed({ project: config.name, exitCode, log })
+      const hasPackageJson = yield* fs.exists(join(rootDir, "package.json")).pipe(
+        Effect.mapError(toBuildFailed)
+      )
+      if (hasPackageJson) {
+        const hasNodeModules = yield* fs.exists(join(rootDir, "node_modules")).pipe(
+          Effect.mapError(toBuildFailed)
+        )
+        if (!hasNodeModules) {
+          const [hasBunLock, hasPackageLock] = yield* Effect.all([
+            fs.exists(join(rootDir, "bun.lock")).pipe(Effect.mapError(toBuildFailed)),
+            fs.exists(join(rootDir, "package-lock.json")).pipe(Effect.mapError(toBuildFailed))
+          ])
+          const installCommand = hasBunLock ? "bun install" : hasPackageLock ? "npm ci" : "npm install"
+          const install = yield* runCommand(installCommand).pipe(Effect.mapError(toBuildFailed))
+          if (install.exitCode !== ChildProcessSpawner.ExitCode(0)) {
+            return yield* new BuildFailed({ project: config.name, exitCode: install.exitCode, log: install.log })
+          }
+        }
       }
 
-      return { outputDir: resolve(rootDir, config.outputDir ?? "dist"), buildLog: log }
+      const result = yield* runCommand(command).pipe(Effect.mapError(toBuildFailed))
+
+      if (result.exitCode !== ChildProcessSpawner.ExitCode(0)) {
+        return yield* new BuildFailed({ project: config.name, exitCode: result.exitCode, log: result.log })
+      }
+
+      return { outputDir: resolve(rootDir, config.outputDir ?? "dist"), buildLog: result.log }
     })
 
     const packageArtifact = Effect.fn("Builder.packageArtifact")(
