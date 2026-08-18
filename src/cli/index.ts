@@ -1,25 +1,17 @@
 import { BunRuntime } from "@effect/platform-bun"
 import { layer as childProcessSpawnerLayer } from "@effect/platform-bun/BunChildProcessSpawner"
 import { layer as fileSystemLayer } from "@effect/platform-bun/BunFileSystem"
-import { layer as bunHttpServerLayer } from "@effect/platform-bun/BunHttpServer"
 import { layer as pathLayer } from "@effect/platform-bun/BunPath"
 import { layer as stdioLayer } from "@effect/platform-bun/BunStdio"
 import { layer as terminalLayer } from "@effect/platform-bun/BunTerminal"
-import { Context, Effect, Layer } from "effect"
+import { Effect, Layer } from "effect"
 import { layer as builderLayer } from "../builder/builder.js"
 import { main } from "../cli/cli.js"
-import { layer as runtimeConfigLayer, RuntimeConfig } from "../config/runtime.js"
+import { layer as runtimeConfigLayer } from "../config/runtime.js"
 import { layer as deployLayer } from "../pipeline/deploy.js"
 import { layer as registryLayer } from "../registry/registry.js"
 import { layer as serverLayer } from "../server/server.js"
 import { layer as storageLayer } from "../storage/storage.js"
-
-const httpServerLayer = runtimeConfigLayer.pipe(
-  Layer.flatMap((env) => {
-    const config = Context.get(env, RuntimeConfig)
-    return bunHttpServerLayer({ port: config.port })
-  })
-)
 
 const spawnerEnv = Layer.provide(childProcessSpawnerLayer, Layer.merge(fileSystemLayer, pathLayer))
 
@@ -29,7 +21,6 @@ const infra = Layer.mergeAll(
   spawnerEnv,
   stdioLayer,
   terminalLayer,
-  httpServerLayer,
   runtimeConfigLayer
 )
 

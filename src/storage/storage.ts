@@ -33,7 +33,9 @@ export const layer = Layer.effect(
         accessKeyId: config.supabaseAccessKeyId,
         secretAccessKey: config.supabaseSecretAccessKey
       },
-      forcePathStyle: true
+      forcePathStyle: true,
+      requestChecksumCalculation: "WHEN_REQUIRED",
+      responseChecksumValidation: "WHEN_REQUIRED"
     })
 
     const putObject = Effect.fn("Storage.putObject")(function* (key: string, sourcePath: string) {

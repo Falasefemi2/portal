@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest"
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
-import { DateTime, Effect, Layer, Sink, Stdio, Stream } from "effect"
+import { DateTime, Effect, FileSystem, Layer, Sink, Stdio, Stream } from "effect"
 import { CliError } from "effect/unstable/cli"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { layer as fileSystemLayer } from "@effect/platform-bun/BunFileSystem"
@@ -91,7 +91,7 @@ const capturingStdio = (lines: Array<string>): Layer.Layer<Stdio.Stdio> =>
 
 const withCli = <A, E, R>(
   dataDir: string,
-  opts: { script: Script; storageLayer?: Layer.Layer<Storage, never, never> },
+  opts: { script: Script; storageLayer?: Layer.Layer<Storage, never, never>; spawner?: ReturnType<typeof ChildProcessSpawner.make> },
   out: Array<string>,
   effect: Effect.Effect<A, E, R>
 ) => {
@@ -105,9 +105,10 @@ const withCli = <A, E, R>(
     port: 8080,
     dataDir
   })
+  const spawner = opts.spawner ?? makeFakeSpawner(opts.script)
   const builderEnv = Layer.provideMerge(
     builderLayer,
-    Layer.merge(fileSystemLayer, Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, makeFakeSpawner(opts.script)))
+    Layer.merge(fileSystemLayer, Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner))
   )
   const cliEnv = Layer.provideMerge(
     Layer.mergeAll(deployLayer),
@@ -251,6 +252,48 @@ describe("cli", () => {
           })
         )
       )
+    )
+  )
+
+  it.effect("deploy clones a remote URL into the data dir before deploying", () =>
+    withTempDir("portal-cli-data-").pipe(
+      Effect.flatMap((dataDir) => {
+        const out: Array<string> = []
+        const base = makeFakeSpawner(buildScript)
+        const urlSpawner = ChildProcessSpawner.make((command) => {
+          const cmd = command as ChildProcess.StandardCommand
+          if (cmd.command === "git" && cmd.args[0] === "clone") {
+            const target = cmd.args[cmd.args.length - 1] ?? ""
+            return Effect.gen(function* () {
+              yield* Effect.promise(async () => {
+                await mkdir(join(target, "dist"), { recursive: true })
+                await writeFile(
+                  join(target, "package.json"),
+                  JSON.stringify({ name: "easyrent", scripts: { build: "echo hi" } })
+                )
+                await writeFile(join(target, "dist", "index.html"), "<h1>hi</h1>")
+              })
+              return yield* base.spawn(command)
+            })
+          }
+          return base.spawn(command)
+        })
+        return withCli(dataDir, { script: buildScript, spawner: urlSpawner }, out,
+          Effect.gen(function* () {
+            yield* deploy("https://github.com/Falasefemi2/easyrent")
+
+            const registry = yield* Registry
+            const [record] = yield* registry.listDeploys()
+            expect(record?.status).toBe("succeeded")
+            expect(record?.project).toBe("easyrent")
+            expect(out.join("")).toContain(`deployed easyrent (${record?.deployId}) at ${gitSha}`)
+
+            const fs = yield* FileSystem.FileSystem
+            const clonedProject = yield* fs.exists(join(dataDir, "clones", "github.com-Falasefemi2-easyrent", "package.json"))
+            expect(clonedProject).toBe(true)
+          })
+        )
+      })
     )
   )
 

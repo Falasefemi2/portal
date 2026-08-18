@@ -55,8 +55,8 @@ const fromRow = (row: DeployRow): DeployRecord =>
     gitSha: row.git_sha,
     status: row.status,
     createdAt: row.created_at.toISOString(),
-    artifactPath: row.artifact_path ?? undefined,
-    buildLogRef: row.build_log_ref ?? undefined
+    ...(row.artifact_path !== null ? { artifactPath: row.artifact_path } : {}),
+    ...(row.build_log_ref !== null ? { buildLogRef: row.build_log_ref } : {})
   })
 
 const registryError = (operation: string) =>
@@ -174,7 +174,7 @@ export const layer = Layer.effect(
       if (clauses.length === 0) return yield* getDeploy(deployId)
 
       const rows = yield* sql<DeployRow>`
-        UPDATE deploys SET ${sql.join(", ")(clauses)}
+        UPDATE deploys SET ${sql.join(", ", false)(clauses)}
         WHERE deploy_id = ${deployId}
         RETURNING ${sql.literal(COLUMNS)}
       `.pipe(registryError("Registry.updateDeploy"))

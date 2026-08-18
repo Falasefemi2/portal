@@ -6,6 +6,9 @@ out
 dist
 *.tgz
 
+# local runtime data (clones, artifacts, logs, registry)
+.portal
+
 # code coverage
 coverage
 *.lcov
