@@ -71,16 +71,19 @@ const recordAtCreate = (input: CreateDeployInput): DeployRecord =>
     createdAt: DateTime.toDateUtc(input.createdAt).toISOString()
   })
 
-const recordAtUpdate = (existing: DeployRecord, patch: DeployPatch): DeployRecord =>
-  Schema.decodeSync(DeployRecord)({
+const recordAtUpdate = (existing: DeployRecord, patch: DeployPatch): DeployRecord => {
+  const artifactPath = patch.artifactPath ?? existing.artifactPath
+  const buildLogRef = patch.buildLogRef ?? existing.buildLogRef
+  return Schema.decodeSync(DeployRecord)({
     deployId: existing.deployId,
     project: existing.project,
     gitSha: existing.gitSha,
     status: patch.status ?? existing.status,
     createdAt: DateTime.toDateUtc(existing.createdAt).toISOString(),
-    artifactPath: patch.artifactPath ?? existing.artifactPath,
-    buildLogRef: patch.buildLogRef ?? existing.buildLogRef
+    ...(artifactPath !== undefined ? { artifactPath } : {}),
+    ...(buildLogRef !== undefined ? { buildLogRef } : {})
   })
+}
 
 const aliasRecordOf = (project: ProjectName, alias: string, deployId: DeployId): AliasRecord =>
   Schema.decodeSync(AliasRecord)({ project, alias, deployId })

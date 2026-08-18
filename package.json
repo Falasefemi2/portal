@@ -14,6 +14,7 @@
   "scripts": {
     "prepare": "effect-tsgo patch",
     "test": "vitest run",
+    "test:watch": "vitest",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix"
   },
@@ -25,6 +26,7 @@
     "@effect/sql-pg": "^4.0.0-rc.110",
     "@effect/vitest": "^4.0.0-rc.110",
     "@google-cloud/storage": "^8.0.0",
-    "effect": "^4.0.0-rc.110"
+    "effect": "^4.0.0-rc.110",
+    "tar": "^7.5.22"
   }
 }

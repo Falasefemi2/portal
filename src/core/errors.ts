@@ -15,6 +15,11 @@ export class BuildFailed extends Schema.TaggedError<BuildFailed>()("BuildFailed"
   log: Schema.String
 }) {}
 
+export class PackageFailed extends Schema.TaggedError<PackageFailed>()("PackageFailed", {
+  project: Schema.NonEmptyString,
+  cause: Schema.Defect()
+}) {}
+
 export class UploadFailed extends Schema.TaggedError<UploadFailed>()("UploadFailed", {
   project: Schema.NonEmptyString,
   deployId: Schema.NonEmptyString,
@@ -48,6 +53,7 @@ export type DeployError =
   | ProjectNotFound
   | ConfigInvalid
   | BuildFailed
+  | PackageFailed
   | UploadFailed
   | DeployNotFound
   | RegistryError

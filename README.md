@@ -8,9 +8,23 @@ Built with [Bun](https://bun.com) and [Effect](https://effect.website) (v4).
 
 ## Status
 
-Early-stage implementation, built in reviewable increments per
-[AGENTS.md](./AGENTS.md). Storage and registry layers are done and tested; the
-builder, pipeline, server, and CLI are next.
+All modules are implemented and tested (41 tests): core model and errors,
+runtime config, GCS storage, Postgres registry, builder, deploy pipeline,
+server, and CLI. Built in reviewable increments per [AGENTS.md](./AGENTS.md).
+
+## CLI usage
+
+```
+portal deploy <path>    build, package, upload, and record a deploy
+portal list             list recorded deploys (production marked)
+portal promote <id>     point the production alias at a deploy
+portal logs <id>        print a deploy's build log
+portal serve            run the local portal server
+```
+
+Run it with Bun: `bun run index.ts deploy <path>`. Requires the environment
+variables in [`.env.example`](./.env.example) — see
+[Environment](#environment).
 
 ## How it works
 
@@ -36,10 +50,10 @@ The core loop mirrors Vercel's deploy pipeline, minus the distributed pieces:
 | `src/config` | Runtime configuration (database URL, GCS bucket, server port, data dir). |
 | `src/registry` | Metadata store. Persists deploy records and aliases (Postgres via `@effect/sql-pg`); ships an in-memory test layer. |
 | `src/storage` | Artifact storage. `putObject` / `getObject` / `listVersions` / `deleteObject` over GCS (`@google-cloud/storage`); ships an in-memory test layer. |
-| `src/builder` | Project detection, build runner, and artifact packaging. (Planned.) |
-| `src/pipeline` | Deploy orchestration tying builder, storage, and registry together. (Planned.) |
-| `src/server` | Local HTTP server with alias resolution and a sync-to-disk serve cache. (Planned.) |
-| `src/cli` | `portal deploy`, `portal list`, `portal promote`, `portal logs`. (Planned.) |
+| `src/builder` | Project detection, build runner (shells out), and artifact packaging (tar). |
+| `src/pipeline` | Deploy orchestration tying builder, storage, and registry together. |
+| `src/server` | Local HTTP server with alias resolution and a sync-to-disk serve cache. |
+| `src/cli` | `portal deploy`, `portal list`, `portal promote`, `portal logs`, `portal serve` (Effect CLI). |
 
 Dependency direction: `core` and `config` are leaf modules. `registry` and
 `storage` depend on `core` and `config`. The pipeline composes `builder`,
@@ -62,6 +76,75 @@ Dependency direction: `core` and `config` are leaf modules. `registry` and
 - **Build isolation.** v0 shells out to the local toolchain. Containerized
   builds are a documented v1 risk, not a v0 feature.
 
+## Environment
+
+Portal reads configuration from environment variables (see
+[`.env.example`](./.env.example)). Copy it to `.env` and fill it in — Bun loads
+`.env` automatically:
+
+```bash
+cp .env.example .env
+```
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `GCS_BUCKET` | yes | GCS bucket name that stores deploy artifacts |
+| `GOOGLE_PROJECT_ID` | no | GCP project that owns the bucket |
+| `DATABASE_URL` | yes | Postgres connection string for the deploy registry |
+| `PORT` | no (default `8080`) | Local server port |
+| `DATA_DIR` | no (default `.portal`) | Local state: build logs, serve cache |
+
+`GCS_BUCKET` and `DATABASE_URL` are required for every command because the
+layer stack builds eagerly — `--help` included. If either is missing the CLI
+exits with a config error.
+
+### How to get the keys
+
+**GCS artifact storage**
+
+1. Create a Google Cloud project: https://console.cloud.google.com (note its
+   project id).
+2. In the project, open **Cloud Storage** and create a bucket. The bucket name
+   must be globally unique, e.g. `my-portal-bucket`. Or, with the `gcloud` CLI:
+
+   ```bash
+   gcloud projects create portal-demo --name="Portal demo"
+   gcloud auth login
+   gcloud config set project portal-demo
+   gcloud storage buckets create gs://my-portal-bucket
+   ```
+
+3. Create a service account: **IAM & Admin → Service Accounts → Create service
+   account** (e.g. `portal-deployer`). Grant it the **Storage Object Admin**
+   role (bucket-scoped is enough).
+4. **Keys → Add key → Create new key → JSON**. A key file downloads — this is
+   your credential. Keep it out of the repo (add it to `.gitignore` if you
+   store it in the project).
+5. Point the GCS client at it and configure Portal:
+
+   ```bash
+   GOOGLE_APPLICATION_CREDENTIALS=/absolute/path/to/portal-sa-key.json
+   GCS_BUCKET=my-portal-bucket
+   GOOGLE_PROJECT_ID=portal-demo
+   ```
+
+   `@google-cloud/storage` reads `GOOGLE_APPLICATION_CREDENTIALS` to
+   authenticate. Alternative to the key file: run `gcloud auth
+   application-default login` to use Application Default Credentials instead.
+
+**Postgres registry**
+
+The registry needs a Postgres connection string for `DATABASE_URL` (tables are
+auto-created on startup). Easiest local option — Docker:
+
+```bash
+docker run -d --name portal-db -e POSTGRES_PASSWORD=portal -p 5432:5432 postgres:16
+# DATABASE_URL=postgresql://postgres:portal@localhost:5432/postgres
+```
+
+Or use a free managed Postgres (Neon, Supabase): create a project and copy its
+connection string into `DATABASE_URL`.
+
 ## Development
 
 Requires [Bun](https://bun.com) (tested on v1.3.x).
@@ -71,7 +154,7 @@ bun install        # install dependencies
 bun run test       # run the vitest suite
 bun run lint       # oxlint
 bunx tsc --noEmit  # typecheck
-bun run index.ts   # current placeholder entry point
+bun run index.ts   # run the portal CLI (see "CLI usage")
 ```
 
 Tests use vitest via `@effect/vitest` — run them with `bun run test`, not

@@ -1,2 +1,1 @@
-console.log("Hello via Bun!");
-
+import "./src/cli/index.js"
