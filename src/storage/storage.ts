@@ -27,11 +27,11 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const config = yield* RuntimeConfig
     const client = new S3Client({
-      endpoint: `https://${config.r2AccountId}.r2.cloudflarestorage.com`,
-      region: "auto",
+      endpoint: `https://${config.supabaseProjectRef}.supabase.co/storage/v1/s3`,
+      region: config.supabaseS3Region,
       credentials: {
-        accessKeyId: config.r2AccessKeyId,
-        secretAccessKey: config.r2SecretAccessKey
+        accessKeyId: config.supabaseAccessKeyId,
+        secretAccessKey: config.supabaseSecretAccessKey
       },
       forcePathStyle: true
     })
@@ -40,7 +40,7 @@ export const layer = Layer.effect(
       yield* Effect.tryPromise({
         try: async () => {
           const body = await readFile(sourcePath)
-          await client.send(new PutObjectCommand({ Bucket: config.r2Bucket, Key: key, Body: body }))
+          await client.send(new PutObjectCommand({ Bucket: config.supabaseBucket, Key: key, Body: body }))
         },
         catch: (cause) => new StorageError({ operation: "Storage.putObject", cause })
       })
@@ -49,7 +49,7 @@ export const layer = Layer.effect(
     const getObject = Effect.fn("Storage.getObject")(function* (key: string, destPath: string) {
       yield* Effect.tryPromise({
         try: async () => {
-          const result = await client.send(new GetObjectCommand({ Bucket: config.r2Bucket, Key: key }))
+          const result = await client.send(new GetObjectCommand({ Bucket: config.supabaseBucket, Key: key }))
           if (result.Body === undefined) {
             throw new Error("empty response body")
           }
@@ -63,7 +63,7 @@ export const layer = Layer.effect(
 
     const listVersions = Effect.fn("Storage.listVersions")(function* (prefix: string) {
       const result = yield* Effect.tryPromise({
-        try: () => client.send(new ListObjectsV2Command({ Bucket: config.r2Bucket, Prefix: prefix })),
+        try: () => client.send(new ListObjectsV2Command({ Bucket: config.supabaseBucket, Prefix: prefix })),
         catch: (cause) => new StorageError({ operation: "Storage.listVersions", cause })
       })
 
@@ -72,7 +72,7 @@ export const layer = Layer.effect(
 
     const deleteObject = Effect.fn("Storage.deleteObject")(function* (key: string) {
       yield* Effect.tryPromise({
-        try: () => client.send(new DeleteObjectCommand({ Bucket: config.r2Bucket, Key: key })),
+        try: () => client.send(new DeleteObjectCommand({ Bucket: config.supabaseBucket, Key: key })),
         catch: (cause) => new StorageError({ operation: "Storage.deleteObject", cause })
       })
     })

@@ -88,40 +88,41 @@ cp .env.example .env
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `R2_ACCOUNT_ID` | yes | Cloudflare account id (part of the R2 endpoint) |
-| `R2_ACCESS_KEY_ID` | yes | R2 API token access key |
-| `R2_SECRET_ACCESS_KEY` | yes | R2 API token secret key |
-| `R2_BUCKET` | yes | R2 bucket that stores deploy artifacts |
+| `SUPABASE_PROJECT_REF` | yes | Supabase project ref (part of the Storage S3 endpoint) |
+| `SUPABASE_S3_ACCESS_KEY_ID` | yes | Supabase S3 access key |
+| `SUPABASE_S3_SECRET_ACCESS_KEY` | yes | Supabase S3 secret key |
+| `SUPABASE_S3_REGION` | yes | Region the Supabase project is hosted in |
+| `SUPABASE_BUCKET` | yes | Supabase Storage bucket that holds deploy artifacts |
 | `DATABASE_URL` | yes | Postgres connection string for the deploy registry |
 | `PORT` | no (default `8080`) | Local server port |
 | `DATA_DIR` | no (default `.portal`) | Local state: build logs, serve cache |
 
-The R2 variables and `DATABASE_URL` are required for every command because the
+The Supabase variables and `DATABASE_URL` are required for every command because the
 layer stack builds eagerly — `--help` included. If any is missing the CLI
 exits with a config error.
 
 ### How to get the keys
 
-**R2 artifact storage**
+**Supabase artifact storage**
 
-1. Sign in to https://dash.cloudflare.com and open the account that will host
-   the bucket. From the left sidebar pick **R2** (it may be under
-   "Storage" → "R2").
-2. In **R2 → Overview**, copy your **Account ID** — the same id appears in the
-   S3 API endpoint `<ACCOUNT_ID>.r2.cloudflarestorage.com`.
-3. Create a bucket: **R2 → Buckets → Create bucket**, e.g.
-   `my-portal-bucket`.
-4. Create an API token: **R2 → Manage R2 API Tokens → Create API Token**.
-   Choose *Object Read & Write* and select your bucket. The token gives you
-   the **Access Key ID** and **Secret Access Key** directly — no JSON file, no
-   Application Default Credentials.
+1. Sign in to https://supabase.com and open the project that will host the
+   bucket.
+2. In **Project Settings → API**, copy your **Project Ref** — the id that
+   appears in the Storage S3 endpoint
+   `https://<PROJECT_REF>.supabase.co/storage/v1/s3`. Note the **Region** from
+   **Project Settings** too.
+3. Create a bucket: **Storage → New bucket**, e.g. `my-portal-bucket`.
+4. Create an S3 access key: **Project Settings → API → Storage → S3 Access
+   Keys → Create new key**. Copy the **Access Key ID** and **Secret Access
+   Key** (the secret is shown once).
 5. Configure Portal:
 
    ```bash
-   R2_ACCOUNT_ID=8a2c7f1d3e9b4c5a6d7e8f90a1b2c3d4
-   R2_ACCESS_KEY_ID=e4f2...
-   R2_SECRET_ACCESS_KEY=9a2b...
-   R2_BUCKET=my-portal-bucket
+   SUPABASE_PROJECT_REF=abcdefghijklmnopqrst
+   SUPABASE_S3_ACCESS_KEY_ID=e4f2...
+   SUPABASE_S3_SECRET_ACCESS_KEY=9a2b...
+   SUPABASE_S3_REGION=us-east-1
+   SUPABASE_BUCKET=my-portal-bucket
    ```
 
 **Postgres registry**

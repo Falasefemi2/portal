@@ -1,10 +1,11 @@
 import { Config, Context, Effect, Layer } from "effect"
 
 export interface RuntimeConfigService {
-  readonly r2AccountId: string
-  readonly r2AccessKeyId: string
-  readonly r2SecretAccessKey: string
-  readonly r2Bucket: string
+  readonly supabaseProjectRef: string
+  readonly supabaseAccessKeyId: string
+  readonly supabaseSecretAccessKey: string
+  readonly supabaseBucket: string
+  readonly supabaseS3Region: string
   readonly databaseUrl: string
   readonly port: number
   readonly dataDir: string
@@ -17,19 +18,21 @@ export class RuntimeConfig extends Context.Service<RuntimeConfig, RuntimeConfigS
 export const layer = Layer.effect(
   RuntimeConfig,
   Effect.gen(function* () {
-    const r2AccountId = yield* Config.nonEmptyString("R2_ACCOUNT_ID")
-    const r2AccessKeyId = yield* Config.nonEmptyString("R2_ACCESS_KEY_ID")
-    const r2SecretAccessKey = yield* Config.nonEmptyString("R2_SECRET_ACCESS_KEY")
-    const r2Bucket = yield* Config.nonEmptyString("R2_BUCKET")
+    const supabaseProjectRef = yield* Config.nonEmptyString("SUPABASE_PROJECT_REF")
+    const supabaseAccessKeyId = yield* Config.nonEmptyString("SUPABASE_S3_ACCESS_KEY_ID")
+    const supabaseSecretAccessKey = yield* Config.nonEmptyString("SUPABASE_S3_SECRET_ACCESS_KEY")
+    const supabaseBucket = yield* Config.nonEmptyString("SUPABASE_BUCKET")
+    const supabaseS3Region = yield* Config.nonEmptyString("SUPABASE_S3_REGION")
     const databaseUrl = yield* Config.nonEmptyString("DATABASE_URL")
     const port = yield* Config.int("PORT").pipe(Config.withDefault(8080))
     const dataDir = yield* Config.string("DATA_DIR").pipe(Config.withDefault(".portal"))
 
     return RuntimeConfig.of({
-      r2AccountId,
-      r2AccessKeyId,
-      r2SecretAccessKey,
-      r2Bucket,
+      supabaseProjectRef,
+      supabaseAccessKeyId,
+      supabaseSecretAccessKey,
+      supabaseBucket,
+      supabaseS3Region,
       databaseUrl,
       port,
       dataDir

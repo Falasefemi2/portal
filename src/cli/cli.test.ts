@@ -96,10 +96,11 @@ const withCli = <A, E, R>(
   effect: Effect.Effect<A, E, R>
 ) => {
   const runtimeConfig = RuntimeConfig.of({
-    r2AccountId: "test-account",
-    r2AccessKeyId: "test-access",
-    r2SecretAccessKey: "test-secret",
-    r2Bucket: "test-bucket",
+    supabaseProjectRef: "test-project",
+    supabaseAccessKeyId: "test-access",
+    supabaseSecretAccessKey: "test-secret",
+    supabaseBucket: "test-bucket",
+    supabaseS3Region: "us-east-1",
     databaseUrl: "sqlite::memory:",
     port: 8080,
     dataDir
