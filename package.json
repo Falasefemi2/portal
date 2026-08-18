@@ -1,0 +1,30 @@
+{
+  "name": "portal",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "devDependencies": {
+    "@effect/experimental": "^0.61.1",
+    "@effect/tsgo": "0.36.5",
+    "@types/bun": "latest",
+    "oxlint": "^1.78.0",
+    "typescript": "^7.0.0",
+    "vitest": "^4.1.10"
+  },
+  "scripts": {
+    "prepare": "effect-tsgo patch",
+    "test": "vitest run",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix"
+  },
+  "peerDependencies": {
+    "typescript": "^7.0.0"
+  },
+  "dependencies": {
+    "@effect/platform-bun": "^4.0.0-rc.110",
+    "@effect/sql-pg": "^4.0.0-rc.110",
+    "@effect/vitest": "^4.0.0-rc.110",
+    "@google-cloud/storage": "^8.0.0",
+    "effect": "^4.0.0-rc.110"
+  }
+}

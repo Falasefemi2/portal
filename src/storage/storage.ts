@@ -1,0 +1,111 @@
+import { Storage as GcsStorage } from "@google-cloud/storage"
+import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { dirname } from "node:path"
+import { Context, Effect, Layer, Option, Ref } from "effect"
+import { StorageError } from "../core/errors.js"
+import { RuntimeConfig } from "../config/runtime.js"
+
+export interface StorageService {
+  readonly putObject: (key: string, sourcePath: string) => Effect.Effect<void, StorageError>
+  readonly getObject: (key: string, destPath: string) => Effect.Effect<void, StorageError>
+  readonly listVersions: (prefix: string) => Effect.Effect<ReadonlyArray<string>, StorageError>
+  readonly deleteObject: (key: string) => Effect.Effect<void, StorageError>
+}
+
+export class Storage extends Context.Service<Storage, StorageService>()(
+  "portal/storage/Storage"
+) {}
+
+export const layer = Layer.effect(
+  Storage,
+  Effect.gen(function* () {
+    const config = yield* RuntimeConfig
+    const client = new GcsStorage({ projectId: Option.getOrUndefined(config.googleProjectId) })
+    const bucket = client.bucket(config.gcsBucket)
+
+    const putObject = Effect.fn("Storage.putObject")(function* (key: string, sourcePath: string) {
+      yield* Effect.tryPromise({
+        try: () => bucket.upload(sourcePath, { destination: key }),
+        catch: (cause) => new StorageError({ operation: "Storage.putObject", cause })
+      })
+    })
+
+    const getObject = Effect.fn("Storage.getObject")(function* (key: string, destPath: string) {
+      yield* Effect.tryPromise({
+        try: async () => {
+          await mkdir(dirname(destPath), { recursive: true })
+          await bucket.file(key).download({ destination: destPath })
+        },
+        catch: (cause) => new StorageError({ operation: "Storage.getObject", cause })
+      })
+    })
+
+    const listVersions = Effect.fn("Storage.listVersions")(function* (prefix: string) {
+      const files = yield* Effect.tryPromise({
+        try: () => bucket.getFiles({ prefix }),
+        catch: (cause) => new StorageError({ operation: "Storage.listVersions", cause })
+      }).pipe(Effect.map(([files]) => files))
+
+      return files.map((file) => file.name)
+    })
+
+    const deleteObject = Effect.fn("Storage.deleteObject")(function* (key: string) {
+      yield* Effect.tryPromise({
+        try: () => bucket.file(key).delete(),
+        catch: (cause) => new StorageError({ operation: "Storage.deleteObject", cause })
+      })
+    })
+
+    return Storage.of({ putObject, getObject, listVersions, deleteObject })
+  })
+)
+
+export const testLayer = Layer.effect(
+  Storage,
+  Effect.gen(function* () {
+    const objects = yield* Ref.make<ReadonlyMap<string, Uint8Array>>(new Map())
+
+    const putObject = Effect.fn("Storage.fake.putObject")(function* (key: string, sourcePath: string) {
+      const bytes = yield* Effect.tryPromise({
+        try: () => readFile(sourcePath),
+        catch: (cause) => new StorageError({ operation: "Storage.fake.putObject", cause })
+      })
+
+      yield* Ref.update(objects, (m) => new Map(m).set(key, bytes))
+    })
+
+    const getObject = Effect.fn("Storage.fake.getObject")(function* (key: string, destPath: string) {
+      const bytes = yield* Ref.get(objects).pipe(Effect.map((m) => m.get(key)))
+
+      if (bytes === undefined) {
+        return yield* new StorageError({
+          operation: "Storage.fake.getObject",
+          cause: new Error(`object not found: ${key}`)
+        })
+      }
+
+      yield* Effect.tryPromise({
+        try: async () => {
+          await mkdir(dirname(destPath), { recursive: true })
+          await writeFile(destPath, bytes)
+        },
+        catch: (cause) => new StorageError({ operation: "Storage.fake.getObject", cause })
+      })
+    })
+
+    const listVersions = Effect.fn("Storage.fake.listVersions")(function* (prefix: string) {
+      const m = yield* Ref.get(objects)
+      return [...m.keys()].filter((key) => key.startsWith(prefix)).sort()
+    })
+
+    const deleteObject = Effect.fn("Storage.fake.deleteObject")(function* (key: string) {
+      yield* Ref.update(objects, (m) => {
+        const next = new Map(m)
+        next.delete(key)
+        return next
+      })
+    })
+
+    return Storage.of({ putObject, getObject, listVersions, deleteObject })
+  })
+)
