@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest"
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
-import { DateTime, Effect, Layer, Option } from "effect"
+import { DateTime, Effect, Layer } from "effect"
 import { HttpServerResponse } from "effect/unstable/http"
 import { layer as fileSystemLayer } from "@effect/platform-bun/BunFileSystem"
 import { create as tarCreate } from "tar"
@@ -40,8 +40,10 @@ const withSiteDir = () =>
 
 const withServer = <A, E, R>(dataDir: string, effect: Effect.Effect<A, E, R>) => {
   const runtimeConfig = RuntimeConfig.of({
-    gcsBucket: "test-bucket",
-    googleProjectId: Option.none(),
+    r2AccountId: "test-account",
+    r2AccessKeyId: "test-access",
+    r2SecretAccessKey: "test-secret",
+    r2Bucket: "test-bucket",
     databaseUrl: "sqlite::memory:",
     port: 8080,
     dataDir

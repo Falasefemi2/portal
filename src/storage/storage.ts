@@ -1,7 +1,13 @@
-import { Storage as GcsStorage } from "@google-cloud/storage"
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  ListObjectsV2Command,
+  PutObjectCommand,
+  S3Client
+} from "@aws-sdk/client-s3"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
-import { Context, Effect, Layer, Option, Ref } from "effect"
+import { Context, Effect, Layer, Ref } from "effect"
 import { StorageError } from "../core/errors.js"
 import { RuntimeConfig } from "../config/runtime.js"
 
@@ -20,12 +26,22 @@ export const layer = Layer.effect(
   Storage,
   Effect.gen(function* () {
     const config = yield* RuntimeConfig
-    const client = new GcsStorage({ projectId: Option.getOrUndefined(config.googleProjectId) })
-    const bucket = client.bucket(config.gcsBucket)
+    const client = new S3Client({
+      endpoint: `https://${config.r2AccountId}.r2.cloudflarestorage.com`,
+      region: "auto",
+      credentials: {
+        accessKeyId: config.r2AccessKeyId,
+        secretAccessKey: config.r2SecretAccessKey
+      },
+      forcePathStyle: true
+    })
 
     const putObject = Effect.fn("Storage.putObject")(function* (key: string, sourcePath: string) {
       yield* Effect.tryPromise({
-        try: () => bucket.upload(sourcePath, { destination: key }),
+        try: async () => {
+          const body = await readFile(sourcePath)
+          await client.send(new PutObjectCommand({ Bucket: config.r2Bucket, Key: key, Body: body }))
+        },
         catch: (cause) => new StorageError({ operation: "Storage.putObject", cause })
       })
     })
@@ -33,25 +49,30 @@ export const layer = Layer.effect(
     const getObject = Effect.fn("Storage.getObject")(function* (key: string, destPath: string) {
       yield* Effect.tryPromise({
         try: async () => {
+          const result = await client.send(new GetObjectCommand({ Bucket: config.r2Bucket, Key: key }))
+          if (result.Body === undefined) {
+            throw new Error("empty response body")
+          }
+          const bytes = await result.Body.transformToByteArray()
           await mkdir(dirname(destPath), { recursive: true })
-          await bucket.file(key).download({ destination: destPath })
+          await writeFile(destPath, bytes)
         },
         catch: (cause) => new StorageError({ operation: "Storage.getObject", cause })
       })
     })
 
     const listVersions = Effect.fn("Storage.listVersions")(function* (prefix: string) {
-      const files = yield* Effect.tryPromise({
-        try: () => bucket.getFiles({ prefix }),
+      const result = yield* Effect.tryPromise({
+        try: () => client.send(new ListObjectsV2Command({ Bucket: config.r2Bucket, Prefix: prefix })),
         catch: (cause) => new StorageError({ operation: "Storage.listVersions", cause })
-      }).pipe(Effect.map(([files]) => files))
+      })
 
-      return files.map((file) => file.name)
+      return (result.Contents ?? []).flatMap((object) => (object.Key === undefined ? [] : [object.Key]))
     })
 
     const deleteObject = Effect.fn("Storage.deleteObject")(function* (key: string) {
       yield* Effect.tryPromise({
-        try: () => bucket.file(key).delete(),
+        try: () => client.send(new DeleteObjectCommand({ Bucket: config.r2Bucket, Key: key })),
         catch: (cause) => new StorageError({ operation: "Storage.deleteObject", cause })
       })
     })
