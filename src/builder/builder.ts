@@ -30,6 +30,7 @@ const PackageJson = Schema.Struct({
 
 const decodeJson = <A>(path: string, raw: string, schema: Schema.ConstraintDecoder<A, never>) =>
   Effect.try({
+    // SAFETY: JSON.parse returns any; the schema decode below validates the parsed shape before it is used.
     try: () => JSON.parse(raw) as unknown,
     catch: (cause) => new ConfigInvalid({ path, cause })
   }).pipe(

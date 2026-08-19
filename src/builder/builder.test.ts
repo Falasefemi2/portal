@@ -39,6 +39,7 @@ const withBuilder = <A, E>(
 ) => {
   const commands: Array<ChildProcess.StandardCommand> = []
   const spawner = ChildProcessSpawner.make((command) => {
+    // SAFETY: The fake spawner only ever receives StandardCommand instances created by ChildProcess.make in the code under test.
     commands.push(command as ChildProcess.StandardCommand)
     return Effect.succeed(
       ChildProcessSpawner.makeHandle({

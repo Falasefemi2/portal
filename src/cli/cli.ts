@@ -36,7 +36,7 @@ const deployErrorMessage = (error: DeployError): string => {
 
 const describeError = (cause: unknown): string => {
   if (cause instanceof Error) {
-    const inner = describeError((cause as { cause?: unknown }).cause)
+    const inner = describeError(cause.cause)
     return inner === "" ? cause.message : `${cause.message}: ${inner}`
   }
   return cause === undefined ? "" : String(cause)
