@@ -68,7 +68,7 @@ export const layer = Layer.effect(
       const target = ref ?? "production"
       const maybe = yield* registry.resolveAlias(makeProjectName(project), target).pipe(
         Effect.catchTag("AliasNotFound", () => registry.getDeploy(makeDeployId(target))),
-        Effect.catchTag("DeployNotFound", () => Effect.succeed(undefined))
+        Effect.catchTag("DeployNotFound", () => Effect.void),
       )
       if (
         maybe === undefined ||
