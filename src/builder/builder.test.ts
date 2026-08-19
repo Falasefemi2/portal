@@ -155,6 +155,60 @@ describe("Builder.detectProject", () => {
     )
   )
 
+  it.effect("infers a Bun build command from package.json module", () =>
+    withProjectDir({
+      "package.json": JSON.stringify({ name: "acme", module: "src/index.ts" }),
+      "src/index.ts": "console.log('hi')"
+    }).pipe(
+      Effect.flatMap((dir) =>
+        withBuilder(successScript, () =>
+          Effect.gen(function* () {
+            const builder = yield* Builder
+            const config = yield* builder.detectProject(dir)
+            expect(config.name).toBe("acme")
+            expect(config.buildCommand).toBe("bun build src/index.ts --outdir dist --target=bun")
+            expect(config.outputDir).toBe("dist")
+            expect(config.static).toBeUndefined()
+          })
+        )
+      )
+    )
+  )
+
+  it.effect("infers a Bun build command from an index.ts entrypoint", () =>
+    withProjectDir({
+      "package.json": JSON.stringify({ name: "acme" }),
+      "index.ts": "console.log('hi')"
+    }).pipe(
+      Effect.flatMap((dir) =>
+        withBuilder(successScript, () =>
+          Effect.gen(function* () {
+            const builder = yield* Builder
+            const config = yield* builder.detectProject(dir)
+            expect(config.buildCommand).toBe("bun build index.ts --outdir dist --target=bun")
+            expect(config.outputDir).toBe("dist")
+          })
+        )
+      )
+    )
+  )
+
+  it.effect("fails with ConfigInvalid when the module entrypoint is missing", () =>
+    withProjectDir({
+      "package.json": JSON.stringify({ name: "acme", module: "server.ts" })
+    }).pipe(
+      Effect.flatMap((dir) =>
+        withBuilder(successScript, () =>
+          Effect.gen(function* () {
+            const builder = yield* Builder
+            const failure = yield* builder.detectProject(dir).pipe(Effect.flip)
+            expect(failure._tag).toBe("ConfigInvalid")
+          })
+        )
+      )
+    )
+  )
+
   it.effect("fails with ConfigInvalid when the project is not buildable", () =>
     withProjectDir({ "README.md": "nothing here" }).pipe(
       Effect.flatMap((dir) =>
