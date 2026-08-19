@@ -21,6 +21,7 @@ type PortalConfigJson = Schema.Schema.Type<typeof PortalConfigJson>
 
 const PackageJson = Schema.Struct({
   name: Schema.optionalKey(Schema.NonEmptyString),
+  module: Schema.optionalKey(Schema.NonEmptyString),
   scripts: Schema.optionalKey(
     Schema.Struct({
       build: Schema.optionalKey(Schema.NonEmptyString)
@@ -30,6 +31,7 @@ const PackageJson = Schema.Struct({
 
 const decodeJson = <A>(path: string, raw: string, schema: Schema.ConstraintDecoder<A, never>) =>
   Effect.try({
+    // SAFETY: JSON.parse returns any; the schema decode below validates the parsed shape before it is used.
     try: () => JSON.parse(raw) as unknown,
     catch: (cause) => new ConfigInvalid({ path, cause })
   }).pipe(
@@ -100,9 +102,20 @@ export const layer = Layer.effect(
       }
 
       if (hasBuildCommand === false) {
+        const moduleEntry = pkg?.module ?? "index.ts"
+        const hasModuleFile = yield* fs.exists(join(rootDir, moduleEntry)).pipe(
+          Effect.mapError((cause) => new ConfigInvalid({ path: rootDir, cause }))
+        )
+        if (hasModuleFile) {
+          return {
+            name,
+            buildCommand: `bun build ${moduleEntry} --outdir dist --target=bun`,
+            outputDir: configuredOutput ?? "dist"
+          }
+        }
         return yield* new ConfigInvalid({
           path: rootDir,
-          cause: new Error("no build script in package.json and no portal.config.json buildCommand")
+          cause: new Error("no build script in package.json, no portal.config.json buildCommand, and no Bun module entrypoint")
         })
       }
 

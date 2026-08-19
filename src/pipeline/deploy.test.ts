@@ -47,6 +47,7 @@ const withProjectDir = (files: Record<string, string>) =>
 const makeFakeSpawner = (script: Script) => {
   const commands: Array<ChildProcess.StandardCommand> = []
   const spawner = ChildProcessSpawner.make((command) => {
+    // SAFETY: The fake spawner only ever receives StandardCommand instances created by ChildProcess.make in the code under test.
     const cmd = command as ChildProcess.StandardCommand
     commands.push(cmd)
     const isGit = cmd.command === "git"

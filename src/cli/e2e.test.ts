@@ -38,7 +38,7 @@ const withProjectDir = (files: Record<string, string>) =>
   )
 
 const toText = (chunk: string | Uint8Array): string =>
-  typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk)
+  chunk instanceof Uint8Array ? new TextDecoder().decode(chunk) : chunk
 
 const capturingStdio = (lines: Array<string>): Layer.Layer<Stdio.Stdio> =>
   Layer.succeed(

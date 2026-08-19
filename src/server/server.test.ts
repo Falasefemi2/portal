@@ -12,7 +12,7 @@ import { layer as serverLayer, Server } from "./server.js"
 import { testLayer as registryTestLayer, Registry } from "../registry/registry.js"
 import { testLayer as storageTestLayer, Storage } from "../storage/storage.js"
 
-const siteFiles: Record<string, string> = {
+const siteFiles = {
   "index.html": "<h1>acme home</h1>",
   "assets/app.js": "console.log('acme')",
   "about/index.html": "<h1>about</h1>"

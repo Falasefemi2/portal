@@ -39,6 +39,7 @@ const withBuilder = <A, E>(
 ) => {
   const commands: Array<ChildProcess.StandardCommand> = []
   const spawner = ChildProcessSpawner.make((command) => {
+    // SAFETY: The fake spawner only ever receives StandardCommand instances created by ChildProcess.make in the code under test.
     commands.push(command as ChildProcess.StandardCommand)
     return Effect.succeed(
       ChildProcessSpawner.makeHandle({
@@ -142,6 +143,60 @@ describe("Builder.detectProject", () => {
 
   it.effect("fails with ConfigInvalid on malformed portal.config.json", () =>
     withProjectDir({ "portal.config.json": JSON.stringify({ buildCommand: 42 }) }).pipe(
+      Effect.flatMap((dir) =>
+        withBuilder(successScript, () =>
+          Effect.gen(function* () {
+            const builder = yield* Builder
+            const failure = yield* builder.detectProject(dir).pipe(Effect.flip)
+            expect(failure._tag).toBe("ConfigInvalid")
+          })
+        )
+      )
+    )
+  )
+
+  it.effect("infers a Bun build command from package.json module", () =>
+    withProjectDir({
+      "package.json": JSON.stringify({ name: "acme", module: "src/index.ts" }),
+      "src/index.ts": "console.log('hi')"
+    }).pipe(
+      Effect.flatMap((dir) =>
+        withBuilder(successScript, () =>
+          Effect.gen(function* () {
+            const builder = yield* Builder
+            const config = yield* builder.detectProject(dir)
+            expect(config.name).toBe("acme")
+            expect(config.buildCommand).toBe("bun build src/index.ts --outdir dist --target=bun")
+            expect(config.outputDir).toBe("dist")
+            expect(config.static).toBeUndefined()
+          })
+        )
+      )
+    )
+  )
+
+  it.effect("infers a Bun build command from an index.ts entrypoint", () =>
+    withProjectDir({
+      "package.json": JSON.stringify({ name: "acme" }),
+      "index.ts": "console.log('hi')"
+    }).pipe(
+      Effect.flatMap((dir) =>
+        withBuilder(successScript, () =>
+          Effect.gen(function* () {
+            const builder = yield* Builder
+            const config = yield* builder.detectProject(dir)
+            expect(config.buildCommand).toBe("bun build index.ts --outdir dist --target=bun")
+            expect(config.outputDir).toBe("dist")
+          })
+        )
+      )
+    )
+  )
+
+  it.effect("fails with ConfigInvalid when the module entrypoint is missing", () =>
+    withProjectDir({
+      "package.json": JSON.stringify({ name: "acme", module: "server.ts" })
+    }).pipe(
       Effect.flatMap((dir) =>
         withBuilder(successScript, () =>
           Effect.gen(function* () {

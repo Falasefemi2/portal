@@ -48,16 +48,28 @@ interface DeployRow {
 
 const COLUMNS = "deploy_id, project, git_sha, status, created_at, artifact_path, build_log_ref"
 
-const fromRow = (row: DeployRow): DeployRecord =>
-  Schema.decodeSync(DeployRecord)({
+interface DeployRecordInput {
+  readonly deployId: string
+  readonly project: string
+  readonly gitSha: string
+  readonly status: DeployStatus
+  readonly createdAt: string
+  artifactPath?: string
+  buildLogRef?: string
+}
+
+const fromRow = (row: DeployRow): DeployRecord => {
+  const input: DeployRecordInput = {
     deployId: row.deploy_id,
     project: row.project,
     gitSha: row.git_sha,
     status: row.status,
-    createdAt: row.created_at.toISOString(),
-    ...(row.artifact_path !== null ? { artifactPath: row.artifact_path } : {}),
-    ...(row.build_log_ref !== null ? { buildLogRef: row.build_log_ref } : {})
-  })
+    createdAt: row.created_at.toISOString()
+  }
+  if (row.artifact_path !== null) input.artifactPath = row.artifact_path
+  if (row.build_log_ref !== null) input.buildLogRef = row.build_log_ref
+  return Schema.decodeSync(DeployRecord)(input)
+}
 
 const registryError = (operation: string) =>
   Effect.mapError((cause: unknown) => new RegistryError({ operation, cause }))
@@ -74,15 +86,16 @@ const recordAtCreate = (input: CreateDeployInput): DeployRecord =>
 const recordAtUpdate = (existing: DeployRecord, patch: DeployPatch): DeployRecord => {
   const artifactPath = patch.artifactPath ?? existing.artifactPath
   const buildLogRef = patch.buildLogRef ?? existing.buildLogRef
-  return Schema.decodeSync(DeployRecord)({
+  const input: DeployRecordInput = {
     deployId: existing.deployId,
     project: existing.project,
     gitSha: existing.gitSha,
     status: patch.status ?? existing.status,
-    createdAt: DateTime.toDateUtc(existing.createdAt).toISOString(),
-    ...(artifactPath !== undefined ? { artifactPath } : {}),
-    ...(buildLogRef !== undefined ? { buildLogRef } : {})
-  })
+    createdAt: DateTime.toDateUtc(existing.createdAt).toISOString()
+  }
+  if (artifactPath !== undefined) input.artifactPath = artifactPath
+  if (buildLogRef !== undefined) input.buildLogRef = buildLogRef
+  return Schema.decodeSync(DeployRecord)(input)
 }
 
 const aliasRecordOf = (project: ProjectName, alias: string, deployId: DeployId): AliasRecord =>

@@ -52,6 +52,7 @@ const withProjectDir = (files: Record<string, string>) =>
 
 const makeFakeSpawner = (script: Script) => {
   const spawner = ChildProcessSpawner.make((command) => {
+    // SAFETY: The fake spawner only ever receives StandardCommand instances created by ChildProcess.make in the code under test.
     const cmd = command as ChildProcess.StandardCommand
     const isGit = cmd.command === "git"
     const output = isGit ? `${gitSha}\n` : script.output
@@ -76,7 +77,7 @@ const makeFakeSpawner = (script: Script) => {
 }
 
 const toText = (chunk: string | Uint8Array): string =>
-  typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk)
+  chunk instanceof Uint8Array ? new TextDecoder().decode(chunk) : chunk
 
 const capturingStdio = (lines: Array<string>): Layer.Layer<Stdio.Stdio> =>
   Layer.succeed(
@@ -261,6 +262,7 @@ describe("cli", () => {
         const out: Array<string> = []
         const base = makeFakeSpawner(buildScript)
         const urlSpawner = ChildProcessSpawner.make((command) => {
+          // SAFETY: The fake spawner only ever receives StandardCommand instances created by ChildProcess.make in the code under test.
           const cmd = command as ChildProcess.StandardCommand
           if (cmd.command === "git" && cmd.args[0] === "clone") {
             const target = cmd.args[cmd.args.length - 1] ?? ""

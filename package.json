@@ -6,10 +6,11 @@
   "devDependencies": {
     "@effect/experimental": "^0.61.1",
     "@effect/tsgo": "0.36.5",
+    "@oxlint/plugins": "1.79.0",
     "@types/bun": "latest",
-    "oxlint": "^1.78.0",
+    "oxlint": "1.79.0",
     "typescript": "^7.0.0",
-    "vitest": "^4.1.10"
+    "vitest": "4.1.11"
   },
   "scripts": {
     "prepare": "effect-tsgo patch",
