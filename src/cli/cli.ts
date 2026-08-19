@@ -107,8 +107,8 @@ export const list = Effect.fn("Cli.list")(function* () {
       .resolveAlias(record.project, "production")
       .pipe(
         Effect.catchTags({
-          AliasNotFound: () => Effect.succeed(undefined),
-          RegistryError: () => Effect.succeed(undefined)
+          AliasNotFound: () => Effect.void,
+          RegistryError: () => Effect.void
         })
       )
     const marker = production?.deployId === record.deployId ? " [production]" : ""
