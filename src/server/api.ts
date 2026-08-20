@@ -281,8 +281,26 @@ export const handleApi = Effect.fn("Api.handle")(function* (
     if (!redeployPath) return yield* badRequest("redeploy requires { path } to local repo or github url")
     const deployService = yield* DeployService.pipe(Effect.orElseSucceed(() => undefined))
     if (!deployService) return yield* serverError("deploy service not available")
-    yield* Effect.forkDetach(deployService.deploy(redeployPath).pipe(Effect.catch((e) => Effect.logError(e).pipe(Effect.asVoid))))
-    return yield* json({ ok: true, project: (rec as { project: string }).project, redeployPath }, 202)
+    const r = yield* deployService.deploy(redeployPath).pipe(
+      Effect.map((record) => ({ ok: true as const, record })),
+      Effect.catch((err) =>
+        Effect.gen(function* () {
+          yield* Effect.logError(err)
+          const all = yield* registry.listDeploys().pipe(Effect.orElseSucceed(() => [] as never))
+          const newest = [...all].sort((a, b) => +new Date(b.createdAt as unknown as string) - +new Date(a.createdAt as unknown as string))[0]
+          return { ok: false as const, err, record: newest }
+        })
+      )
+    )
+    if (r.ok) return yield* json(r.record)
+    const tag = (r.err as { _tag?: string })._tag ?? "DeployError"
+    const rawCause = (r.err as { cause?: unknown }).cause
+    const detail = rawCause instanceof Error ? rawCause.message : rawCause != null ? String(rawCause) : undefined
+    const msg = detail || (r.err as { message?: string }).message || String(r.err)
+    return yield* HttpServerResponse.json({ _tag: tag, message: msg, path: redeployPath, deployId: r.record?.deployId, project: r.record?.project, record: r.record }, { status: 400 }).pipe(
+      Effect.map(withCors),
+      Effect.orDie
+    )
   }
 
   if (pathname === "/api/deploy" && method === "POST") {
@@ -291,7 +309,7 @@ export const handleApi = Effect.fn("Api.handle")(function* (
     try {
       payload = JSON.parse(bodyText) as typeof payload
     } catch {
-      return yield* badRequest("invalid JSON")
+      return yield* badRequest(`invalid JSON: ${bodyText.slice(0, 200)}`)
     }
     const deployPath = payload.path
     if (!deployPath || typeof deployPath !== "string") return yield* badRequest("missing path")
@@ -304,12 +322,28 @@ export const handleApi = Effect.fn("Api.handle")(function* (
         yield* fs.writeFileString(cfgPath, JSON.stringify({ buildCommand: payload.buildCommand }, null, 2)).pipe(Effect.orElseSucceed(() => undefined))
       }
     }
-    yield* Effect.forkDetach(deployService.deploy(deployPath).pipe(Effect.catch((e) => Effect.logError(e).pipe(Effect.asVoid))))
-    // return immediately with 202; frontend will poll
-    const all = yield* registry.listDeploys().pipe(Effect.orElseSucceed(() => [] as never))
-    const newest = [...all].sort((a, b) => +new Date(b.createdAt as unknown as string) - +new Date(a.createdAt as unknown as string))[0]
-    if (!newest) return yield* json({ ok: true }, 202)
-    return yield* json(newest, 202)
+    // Run synchronously so failures (ConfigInvalid, BuildFailed) are surfaced to the UI with a persisted failed deploy
+    const result = yield* deployService.deploy(deployPath).pipe(
+      Effect.map((record) => ({ ok: true as const, record })),
+      Effect.catch((err) =>
+        Effect.gen(function* () {
+          yield* Effect.logError(err)
+          const all = yield* registry.listDeploys().pipe(Effect.orElseSucceed(() => [] as never))
+          const newest = [...all].sort((a, b) => +new Date(b.createdAt as unknown as string) - +new Date(a.createdAt as unknown as string))[0]
+          return { ok: false as const, err, record: newest }
+        })
+      )
+    )
+    if (result.ok) return yield* json(result.record)
+    const errTag = (result.err as { _tag?: string })._tag ?? "DeployError"
+    const rawCause = (result.err as { cause?: unknown }).cause
+    const detail = rawCause instanceof Error ? rawCause.message : rawCause != null ? String(rawCause) : undefined
+    const errMsg = detail || (result.err as { message?: string }).message || String(result.err)
+    // Return the failed deploy so the frontend can link to /deploys/:id and show logs
+    return yield* HttpServerResponse.json(
+      { _tag: errTag, message: errMsg, path: deployPath, deployId: result.record?.deployId, project: result.record?.project, record: result.record },
+      { status: 400 }
+    ).pipe(Effect.map(withCors), Effect.orDie)
   }
 
   if (pathname === "/api/health" && method === "GET") {
