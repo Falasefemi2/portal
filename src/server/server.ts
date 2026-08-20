@@ -7,6 +7,7 @@ import { makeDeployId, makeProjectName } from "../core/model.js"
 import { DeployRecord } from "../core/model.js"
 import { Registry } from "../registry/registry.js"
 import { Storage } from "../storage/storage.js"
+import { handleApi } from "./api.js"
 
 export interface ServerService {
   readonly handle: (pathname: string) => Effect.Effect<HttpServerResponse.HttpServerResponse, never>
@@ -159,7 +160,26 @@ export const serve = Effect.fn("Server.serve")(function* () {
   const httpServer = yield* HttpServer.HttpServer
   const handler = Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest
-    const pathname = new URL(request.url, "http://localhost").pathname
+    const url = new URL(request.url, "http://localhost")
+    const pathname = url.pathname
+    // API routes get CORS + JSON/SSE
+    if (pathname.startsWith("/api/")) {
+      const method = request.method
+      // Preflight
+      if (method === "OPTIONS") {
+        return HttpServerResponse.empty({ status: 204 }).pipe(
+          HttpServerResponse.setHeaders({
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type",
+          })
+        )
+      }
+      const bodyText = yield* request.text.pipe(
+        Effect.catch(() => Effect.succeed("") as Effect.Effect<string, never>)
+      )
+      return yield* handleApi(pathname, method, bodyText || undefined, url.searchParams)
+    }
     return yield* server.handle(pathname)
   })
   return yield* httpServer.serve(handler)
