@@ -3,14 +3,16 @@
 A local-first deploy platform (Vercel-style demo). Point Portal at a local git
 repo (or a GitHub URL), and it builds the project, packages the output, uploads
 the artifact to a Supabase Storage bucket, and serves it locally on request.
+Includes a JSON + SSE API for the `portal-frontend` dashboard — no dummy data.
 
 Built with [Bun](https://bun.com) and [Effect](https://effect.website) (v4).
 
 ## Status
 
-All modules are implemented and tested (42 tests): core model and errors,
-runtime config, Supabase Storage, Postgres registry, builder, deploy pipeline,
-server, and CLI. Built in reviewable increments per [AGENTS.md](./AGENTS.md).
+All modules implemented and tested (42 tests): core model and errors, runtime
+config, Supabase Storage, Postgres registry, builder, deploy pipeline, server,
+and CLI. API branch (`api`) adds the JSON/SSE surface consumed by
+`portal-frontend`. Built in reviewable increments per `AGENTS.md`.
 
 ## CLI usage
 
@@ -19,7 +21,7 @@ portal deploy <path>    build, package, upload, and record a deploy
 portal list             list recorded deploys (production marked)
 portal promote <id>     point the production alias at a deploy
 portal logs <id>        print a deploy's build log
-portal serve            run the local portal server
+portal serve            run the local portal server (static + API on :8080)
 ```
 
 `deploy` takes a local git repo path or a GitHub URL (e.g.
@@ -53,7 +55,7 @@ The core loop mirrors Vercel's deploy pipeline, minus the distributed pieces:
 | `src/storage` | Artifact storage. `putObject` / `getObject` / `listVersions` / `deleteObject` over Supabase Storage (`@aws-sdk/client-s3`); ships an in-memory test layer. |
 | `src/builder` | Project detection, dependency install, build runner (shells out), and artifact packaging (tar). |
 | `src/pipeline` | Deploy orchestration tying builder, storage, and registry together. |
-| `src/server` | Local HTTP server with alias resolution and a sync-to-disk serve cache. |
+| `src/server` | Local HTTP server with alias resolution, sync-to-disk serve cache, and JSON/SSE API (`src/server/api.ts`). |
 | `src/cli` | `portal deploy`, `portal list`, `portal promote`, `portal logs`, `portal serve` (Effect CLI). |
 
 Dependency direction: `core` and `config` are leaf modules. `registry` and
@@ -76,6 +78,28 @@ Dependency direction: `core` and `config` are leaf modules. `registry` and
   streaming per-request and fine for the demo; streaming is a future option.
 - **Build isolation.** v0 shells out to the local toolchain. Containerized
   builds are a documented v1 risk, not a v0 feature.
+
+## API (branch `api`) — consumed by `portal-frontend`
+
+`portal serve` now serves both static artifacts **and** a JSON/SSE API under
+`/api/*` (CORS `*`, `OPTIONS` preflight). Implemented in `src/server/api.ts`,
+branched in `src/server/server.ts:157` before static handling.
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/api/projects` | Groups `registry.listDeploys()` by `project`, includes `deployCount`, `lastDeploy`, `productionDeployId` via `resolveAlias(production)` |
+| `GET` | `/api/projects/:project/deploys` | `registry.listDeploys(project)` sorted newest first |
+| `GET` | `/api/deploys/:id` | `registry.getDeploy` |
+| `GET` | `/api/deploys/:id/logs?sse=1` | SSE `text/event-stream` — tails `.portal/logs/:id.log` via `FileSystem`, emits `data: {line,at}` + `event: done` when status ≠ `running` |
+| `GET` | `/api/deploys/:id/events` | SSE live status — polls `registry.getDeploy` every 1s, emits `event: status {status,at}` + `ping` keepalive |
+| `GET` | `/api/health` | `{ok:true}` |
+| `POST` | `/api/deploy` | `{path, buildCommand?}` — `forkDetach(DeployService.deploy(path))`, 202 with newest `DeployRecord` (portal writes `portal.config.json` if `buildCommand` supplied) |
+| `POST` | `/api/deploys/:id/promote` | `registry.setAlias(project, "production", id)` — 409 if status ≠ `succeeded` |
+| `POST` | `/api/deploys/:id/redeploy` | `{path}` required — `forkDetach(DeployService.deploy(path))`, 202 |
+
+Static serving unchanged: `GET /` (newline project list), `GET /health`, `GET /:project/:ref/*` (artifact).
+
+`DeployRecord` shape (`src/core/model.ts:15`): `{deployId, project, gitSha, status: running|succeeded|failed, createdAt, artifactPath?, buildLogRef?}`.
 
 ## Environment
 
@@ -118,13 +142,13 @@ exits with a config error.
 5. Configure Portal (use `us-east-1` as the region — Supabase's S3 gateway
    signs requests with it regardless of project region):
 
-   ```bash
-   SUPABASE_PROJECT_REF=abcdefghijklmnopqrst
-   SUPABASE_S3_ACCESS_KEY_ID=e4f2...
-   SUPABASE_S3_SECRET_ACCESS_KEY=9a2b...
-   SUPABASE_S3_REGION=us-east-1
-   SUPABASE_BUCKET=my-portal-bucket
-   ```
+    ```bash
+    SUPABASE_PROJECT_REF=abcdefghijklmnopqrst
+    SUPABASE_S3_ACCESS_KEY_ID=e4f2...
+    SUPABASE_S3_SECRET_ACCESS_KEY=9a2b...
+    SUPABASE_S3_REGION=us-east-1
+    SUPABASE_BUCKET=my-portal-bucket
+    ```
 
 **Postgres registry**
 
@@ -153,6 +177,24 @@ bun run index.ts   # run the portal CLI (see "CLI usage")
 
 Tests use vitest via `@effect/vitest` — run them with `bun run test`, not
 `bun test` (Bun's native runner is not compatible with `@effect/vitest`).
+
+### Running with the frontend
+
+```bash
+# terminal 1 — portal API + static serve
+git checkout api
+bun run index.ts serve
+# → portal listening on http://localhost:8080
+
+# terminal 2 — frontend (real data, no mocks)
+cd ../portal-frontend
+bun install
+# NEXT_PUBLIC_PORTAL_URL defaults to http://localhost:8080
+bun run dev        # http://localhost:3000
+```
+
+`bun run index.ts deploy <path>` still works — new deploys appear in the
+frontend live via SSE (`/api/deploys/:id/events` + `/logs`).
 
 ## Scope notes (v0)
 
