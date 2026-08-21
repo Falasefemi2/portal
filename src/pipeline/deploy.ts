@@ -55,23 +55,20 @@ export const layer = Layer.effect(
                 ? rootDir.replace(/^https?:\/\//, "").split("/").pop()?.replace(/\.git$/, "") ?? basename(rootDir)
                 : basename(rootDir)
               const inferred = inferredRaw || "unknown"
-              let name: ReturnType<typeof makeProjectName>
-              try {
-                name = makeProjectName(inferred)
-              } catch {
-                name = makeProjectName("unknown")
-              }
+              const name = yield* Effect.try(() => makeProjectName(inferred)).pipe(
+                Effect.orElseSucceed(() => makeProjectName("unknown"))
+              )
               const detail =
                 cause.cause instanceof Error ? cause.cause.message : String(cause.cause ?? cause.message ?? "")
               const log = `[portal] config error at ${cause.path}\n${detail}\n—\nFix: add a "build" script to package.json or a portal.config.json with { "buildCommand": "npm run build" }`
-              yield* registry.createDeploy({ deployId, project: name, gitSha: gitSha || "unknown", createdAt }).pipe(Effect.orElseSucceed(() => undefined as unknown as DeployRecord))
-              const logPath = yield* writeBuildLog(deployId, log).pipe(Effect.orElseSucceed(() => undefined as unknown as string))
+              yield* registry.createDeploy({ deployId, project: name, gitSha: gitSha || "unknown", createdAt }).pipe(Effect.ignore)
+              const logPath = yield* writeBuildLog(deployId, log).pipe(Effect.orElseSucceed(() => undefined))
               if (logPath) {
-                yield* registry.updateDeploy(deployId, { status: "failed", buildLogRef: logPath }).pipe(Effect.orElseSucceed(() => undefined as unknown as DeployRecord))
+                yield* registry.updateDeploy(deployId, { status: "failed", buildLogRef: logPath }).pipe(Effect.ignore)
               } else {
                 yield* markFailed(deployId)
               }
-              return yield* Effect.fail(cause)
+              return yield* cause
             })
           )
         )
@@ -82,9 +79,9 @@ export const layer = Layer.effect(
         const buildOutput = yield* builder.build(projectConfig, rootDir).pipe(
           Effect.tapError((e) =>
             Effect.gen(function* () {
-              const log = `[portal] build failed\n${(e as { log?: string }).log ?? String((e as { cause?: unknown }).cause ?? e)}`
-              const p = yield* writeBuildLog(deployId, log).pipe(Effect.orElseSucceed(() => undefined as unknown as string))
-              if (p) yield* registry.updateDeploy(deployId, { status: "failed", buildLogRef: p }).pipe(Effect.orElseSucceed(() => undefined as unknown as DeployRecord))
+              const log = `[portal] build failed\n${e.log}`
+              const p = yield* writeBuildLog(deployId, log).pipe(Effect.orElseSucceed(() => undefined))
+              if (p) yield* registry.updateDeploy(deployId, { status: "failed", buildLogRef: p }).pipe(Effect.ignore)
               else yield* markFailed(deployId)
             })
           )

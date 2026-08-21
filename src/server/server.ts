@@ -175,9 +175,7 @@ export const serve = Effect.fn("Server.serve")(function* () {
           })
         )
       }
-      const bodyText = yield* request.text.pipe(
-        Effect.catch(() => Effect.succeed("") as Effect.Effect<string, never>)
-      )
+      const bodyText = yield* request.text.pipe(Effect.orElseSucceed(() => ""))
       return yield* handleApi(pathname, method, bodyText || undefined, url.searchParams)
     }
     return yield* server.handle(pathname)

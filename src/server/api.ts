@@ -1,8 +1,35 @@
 import { join } from "node:path"
-import { Effect, FileSystem } from "effect"
+import { DateTime, Effect, FileSystem, Option, Result, Schema } from "effect"
 import { HttpServerResponse } from "effect/unstable/http"
 import { Registry } from "../registry/registry.js"
 import { DeployService } from "../pipeline/deploy.js"
+import type { DeployError } from "../core/errors.js"
+import { DeployId, ProjectName, DeployStatus } from "../core/model.js"
+import type { DeployRecord } from "../core/model.js"
+
+interface ProjectSummary {
+  readonly name: ProjectName
+  readonly deployCount: number
+  readonly lastDeploy?: DeployRecord
+  readonly productionDeployId?: DeployId
+}
+
+interface ApiErrorBody {
+  readonly _tag: string
+  readonly message: string
+  readonly path?: string
+  readonly deployId?: string
+  readonly project?: string
+  readonly record?: DeployRecord
+}
+
+type ApiData =
+  | ReadonlyArray<ProjectSummary>
+  | ReadonlyArray<DeployRecord>
+  | DeployRecord
+  | ApiErrorBody
+  | { readonly ok: true }
+  | { readonly lines: ReadonlyArray<string>; readonly done: boolean }
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -13,8 +40,8 @@ const corsHeaders = {
 const withCors = (r: HttpServerResponse.HttpServerResponse) =>
   HttpServerResponse.setHeaders(r, corsHeaders)
 
-const json = (body: unknown, status = 200) =>
-  HttpServerResponse.json(body, { status }).pipe(Effect.map(withCors), Effect.orDie)
+const json = (data: ApiData, status = 200) =>
+  HttpServerResponse.json(data, { status }).pipe(Effect.map(withCors), Effect.orDie)
 
 const text = (body: string, status = 200, contentType = "text/plain") =>
   Effect.succeed(HttpServerResponse.text(body, { status, contentType }).pipe(withCors))
@@ -22,6 +49,55 @@ const text = (body: string, status = 200, contentType = "text/plain") =>
 const notFound = (msg = "not found") => text(msg, 404)
 const badRequest = (msg: string) => text(msg, 400)
 const serverError = (msg = "internal error") => text(msg, 500)
+
+const sseResponse = (stream: ReadableStream<Uint8Array>) =>
+  HttpServerResponse.raw(stream, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+      ...corsHeaders,
+    },
+  })
+
+const closeController = (controller: ReadableStreamDefaultController<Uint8Array>): void => {
+  try {
+    controller.close()
+  } catch {
+  }
+}
+
+const newestFirst = (a: DeployRecord, b: DeployRecord) =>
+  DateTime.toEpochMillis(b.createdAt) - DateTime.toEpochMillis(a.createdAt)
+
+const createdMs = (record: DeployRecord | undefined) =>
+  record === undefined ? 0 : DateTime.toEpochMillis(record.createdAt)
+
+const errorDetail = (error: DeployError): string => {
+  switch (error._tag) {
+    case "ConfigInvalid":
+    case "PackageFailed":
+    case "UploadFailed":
+    case "RegistryError":
+      return error.cause instanceof Error ? error.cause.message : String(error.cause ?? "")
+    case "BuildFailed":
+      return error.log
+    case "DeployNotFound":
+      return `deploy ${error.deployId} not found`
+    case "ProjectNotFound":
+      return `project ${error.project} not found`
+  }
+}
+
+const RedeployBody = Schema.Struct({
+  path: Schema.NonEmptyString,
+})
+
+const DeployBody = Schema.Struct({
+  path: Schema.NonEmptyString,
+  buildCommand: Schema.optionalKey(Schema.NonEmptyString),
+})
 
 export const handleApi = Effect.fn("Api.handle")(function* (
   pathname: string,
@@ -31,319 +107,269 @@ export const handleApi = Effect.fn("Api.handle")(function* (
 ) {
   const registry = yield* Registry
   const fs = yield* FileSystem.FileSystem
+  const services = yield* Effect.context<Registry | FileSystem.FileSystem>()
 
   if (method === "OPTIONS") {
-    return HttpServerResponse.empty({ status: 204 }).pipe(withCors)
+    return yield* Effect.succeed(HttpServerResponse.empty({ status: 204 }).pipe(withCors))
   }
 
   if (pathname === "/api/projects" && method === "GET") {
-    const deploys = yield* registry.listDeploys().pipe(Effect.orElseSucceed(() => [] as never))
-    const byProject = new Map<string, typeof deploys>()
-    for (const d of deploys) {
-      const list = byProject.get(d.project)
-      if (list) (list as unknown as Array<(typeof deploys)[number]>).push(d)
-      else byProject.set(d.project, [d])
+    const deploys: ReadonlyArray<DeployRecord> = yield* registry.listDeploys().pipe(Effect.orElseSucceed(() => []))
+    const byProject = new Map<ProjectName, Array<DeployRecord>>()
+    for (const deploy of deploys) {
+      const existing = byProject.get(deploy.project)
+      if (existing === undefined) byProject.set(deploy.project, [deploy])
+      else existing.push(deploy)
     }
-    const projects: Array<{
-      name: string
-      deployCount: number
-      lastDeploy?: (typeof deploys)[number]
-      productionDeployId?: string
-    }> = []
+    const projects: Array<ProjectSummary> = []
     for (const [name, list] of byProject) {
-      const sorted = [...list].sort(
-        (a, b) => +new Date(b.createdAt as unknown as string) - +new Date(a.createdAt as unknown as string)
-      )
-      const last = sorted[0]
-      const prod = yield* registry
-        .resolveAlias(name as never, "production")
-        .pipe(Effect.catchTags({ AliasNotFound: () => Effect.succeed(undefined), RegistryError: () => Effect.succeed(undefined) }))
+      const lastDeploy = [...list].sort(newestFirst)[0]
+      const production = yield* Effect.option(registry.resolveAlias(name, "production"))
       projects.push({
         name,
         deployCount: list.length,
-        lastDeploy: last,
-        productionDeployId: prod?.deployId as string | undefined,
+        lastDeploy,
+        productionDeployId: Option.isSome(production) ? production.value.deployId : undefined,
       })
     }
-    projects.sort((a, b) => {
-      const at = a.lastDeploy ? +new Date(a.lastDeploy.createdAt as unknown as string) : 0
-      const bt = b.lastDeploy ? +new Date(b.lastDeploy.createdAt as unknown as string) : 0
-      return bt - at
-    })
+    projects.sort((a, b) => createdMs(b.lastDeploy) - createdMs(a.lastDeploy))
     return yield* json(projects)
   }
 
   const mProjectDeploys = pathname.match(/^\/api\/projects\/([^/]+)\/deploys$/)
   if (mProjectDeploys && method === "GET") {
-    const project = decodeURIComponent(mProjectDeploys[1]!)
-    const rows = yield* registry.listDeploys(project as never).pipe(Effect.orElseSucceed(() => [] as never))
-    const filtered = [...rows].sort(
-      (a, b) => +new Date(b.createdAt as unknown as string) - +new Date(a.createdAt as unknown as string)
+    const rawProject = decodeURIComponent(mProjectDeploys[1]!)
+    const project = yield* Effect.option(Schema.decodeEffect(ProjectName)(rawProject))
+    if (Option.isNone(project)) return yield* json([])
+    const deploys: ReadonlyArray<DeployRecord> = yield* registry.listDeploys(project.value).pipe(
+      Effect.orElseSucceed(() => [])
     )
-    return yield* json(filtered)
+    return yield* json([...deploys].sort(newestFirst))
   }
 
   const mDeploy = pathname.match(/^\/api\/deploys\/([^/]+)$/)
   if (mDeploy && method === "GET") {
-    const id = decodeURIComponent(mDeploy[1]!)
-    const rec = yield* registry.getDeploy(id as never).pipe(
-      Effect.catchTags({ DeployNotFound: () => Effect.succeed(undefined), RegistryError: () => Effect.succeed(undefined) })
-    )
-    if (!rec) return yield* notFound(`deploy ${id} not found`)
-    return yield* json(rec)
+    const rawId = decodeURIComponent(mDeploy[1]!)
+    const deployId = yield* Effect.option(Schema.decodeEffect(DeployId)(rawId))
+    if (Option.isNone(deployId)) return yield* notFound(`deploy ${rawId} not found`)
+    const record = yield* Effect.option(registry.getDeploy(deployId.value))
+    if (Option.isNone(record)) return yield* notFound(`deploy ${deployId.value} not found`)
+    return yield* json(record.value)
   }
 
   const mLogs = pathname.match(/^\/api\/deploys\/([^/]+)\/logs$/)
   if (mLogs && method === "GET") {
-    const id = decodeURIComponent(mLogs[1]!)
-    const rec = yield* registry.getDeploy(id as never).pipe(
-      Effect.catchTags({ DeployNotFound: () => Effect.succeed(undefined), RegistryError: () => Effect.succeed(undefined) })
-    )
-    if (!rec) return yield* notFound(`deploy ${id} not found`)
-    const ref = (rec as { buildLogRef?: string }).buildLogRef
-    if (!ref) {
-      // SSE expects stream, but if no log return done immediately
-      if (query.get("sse") !== "0") {
-        const enc = new TextEncoder()
-        const rs = new ReadableStream<Uint8Array>({
-          start(c) {
-            c.enqueue(enc.encode(`event: done\ndata: {}\n\n`))
-            c.close()
-          },
-        })
-        return HttpServerResponse.raw(rs as unknown as Uint8Array, {
-          status: 200,
-          headers: {
-            "Content-Type": "text/event-stream",
-            "Cache-Control": "no-cache",
-            Connection: "keep-alive",
-            ...corsHeaders,
-          },
-        })
-      }
-      return yield* json({ lines: [], done: true })
-    }
+    const rawId = decodeURIComponent(mLogs[1]!)
+    const deployId = yield* Effect.option(Schema.decodeEffect(DeployId)(rawId))
+    if (Option.isNone(deployId)) return yield* notFound(`deploy ${rawId} not found`)
+    const id = deployId.value
+    const record = yield* Effect.option(registry.getDeploy(id))
+    if (Option.isNone(record)) return yield* notFound(`deploy ${id} not found`)
+    const logRef = record.value.buildLogRef
 
     const useSse = query.get("sse") !== "0"
-    if (useSse) {
-      const logPath = ref
-      const encoder = new TextEncoder()
-      const rs = new ReadableStream<Uint8Array>({
-        start(controller) {
-          let offset = 0
-          let closed = false
-          let timer: ReturnType<typeof setTimeout> | undefined
-
-          const tick = () => {
-            if (closed) return
-            Effect.runPromise(
-              Effect.gen(function* () {
-                const exists = yield* fs.exists(logPath).pipe(Effect.orElseSucceed(() => false))
-                if (!exists) {
-                  controller.enqueue(encoder.encode(`data: ${JSON.stringify({ line: "[portal] no log yet", at: new Date().toISOString() })}\n\n`))
-                  setTimeout(() => {
-                    if (!closed) {
-                      controller.enqueue(encoder.encode(`event: done\ndata: {}\n\n`))
-                      try { controller.close() } catch {}
-                      closed = true
-                    }
-                  }, 400)
-                  return
-                }
-                const txt = yield* fs.readFileString(logPath).pipe(Effect.orElseSucceed(() => ""))
-                const lines = txt.split("\n")
-                while (offset < lines.length) {
-                  const line = lines[offset]!
-                  if (line.length > 0 || offset < lines.length - 1) {
-                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ line, at: new Date().toISOString() })}\n\n`))
-                  }
-                  offset++
-                }
-                const cur = yield* registry.getDeploy(id as never).pipe(
-                  Effect.catchTags({ DeployNotFound: () => Effect.succeed(undefined), RegistryError: () => Effect.succeed(undefined) })
-                )
-                const status = (cur as { status?: string } | undefined)?.status
-                if (status && status !== "running" && offset >= lines.length) {
-                  controller.enqueue(encoder.encode(`event: done\ndata: {}\n\n`))
-                  try { controller.close() } catch {}
-                  closed = true
-                  return
-                }
-                if (!closed) timer = setTimeout(tick, 600)
-              }).pipe(Effect.catch(() => Effect.void))
-            )
-          }
-          tick()
-          // cleanup on cancel handled via return not needed for portal demo
-          void timer
-        },
-        cancel() {},
-      })
-      return HttpServerResponse.raw(rs as unknown as Uint8Array, {
-        status: 200,
-        headers: {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache, no-transform",
-          Connection: "keep-alive",
-          ...corsHeaders,
-        },
-      })
+    if (!useSse) {
+      if (logRef === undefined) return yield* json({ lines: [], done: true })
+      const content = yield* fs.readFileString(logRef).pipe(Effect.orElseSucceed(() => ""))
+      return HttpServerResponse.text(content, { status: 200, contentType: "text/plain" }).pipe(withCors)
     }
 
-    const content = yield* fs.readFileString(ref).pipe(Effect.orElseSucceed(() => ""))
-    return HttpServerResponse.text(content, { status: 200, contentType: "text/plain" }).pipe(withCors)
+    const encoder = new TextEncoder()
+    let logTimer: ReturnType<typeof setTimeout> | undefined
+    let logClosed = false
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const finish = () => {
+          controller.enqueue(encoder.encode(`event: done\ndata: {}\n\n`))
+          closeController(controller)
+          logClosed = true
+        }
+        if (logRef === undefined) {
+          finish()
+          return
+        }
+        let offset = 0
+        const tick = (): void => {
+          if (logClosed) return
+          void Effect.runPromiseWith(services)(
+            Effect.gen(function* () {
+              const exists = yield* fs.exists(logRef).pipe(Effect.orElseSucceed(() => false))
+              if (!exists) {
+                controller.enqueue(
+                  encoder.encode(`data: ${JSON.stringify({ line: "[portal] no log yet", at: new Date().toISOString() })}\n\n`)
+                )
+                logTimer = setTimeout(finish, 400)
+                return
+              }
+              const content = yield* fs.readFileString(logRef).pipe(Effect.orElseSucceed(() => ""))
+              const lines = content.split("\n")
+              while (offset < lines.length) {
+                const line = lines[offset]!
+                if (line.length > 0 || offset < lines.length - 1) {
+                  controller.enqueue(
+                    encoder.encode(`data: ${JSON.stringify({ line, at: new Date().toISOString() })}\n\n`)
+                  )
+                }
+                offset++
+              }
+              const current = yield* Effect.option(registry.getDeploy(id))
+              const status = Option.isSome(current) ? current.value.status : undefined
+              if (status !== undefined && status !== "running" && offset >= lines.length) {
+                finish()
+                return
+              }
+              if (!logClosed) logTimer = setTimeout(tick, 600)
+            })
+          ).catch(() => {})
+        }
+        tick()
+      },
+      cancel() {
+        logClosed = true
+        if (logTimer !== undefined) clearTimeout(logTimer)
+      },
+    })
+    return sseResponse(stream)
   }
 
   const mEvents = pathname.match(/^\/api\/deploys\/([^/]+)\/events$/)
   if (mEvents && method === "GET") {
-    const id = decodeURIComponent(mEvents[1]!)
-    const rec = yield* registry.getDeploy(id as never).pipe(
-      Effect.catchTags({ DeployNotFound: () => Effect.succeed(undefined), RegistryError: () => Effect.succeed(undefined) })
-    )
-    if (!rec) return yield* notFound(`deploy ${id} not found`)
+    const rawId = decodeURIComponent(mEvents[1]!)
+    const deployId = yield* Effect.option(Schema.decodeEffect(DeployId)(rawId))
+    if (Option.isNone(deployId)) return yield* notFound(`deploy ${rawId} not found`)
+    const id = deployId.value
+    const record = yield* Effect.option(registry.getDeploy(id))
+    if (Option.isNone(record)) return yield* notFound(`deploy ${id} not found`)
+
     const encoder = new TextEncoder()
-    const initialStatus = (rec as { status: string }).status
-    const rs = new ReadableStream<Uint8Array>({
+    let previousStatus: DeployStatus = record.value.status
+    let interval: ReturnType<typeof setInterval> | undefined
+    let closing = false
+    const stream = new ReadableStream<Uint8Array>({
       start(controller) {
-        let prev = initialStatus
-        controller.enqueue(encoder.encode(`event: status\ndata: ${JSON.stringify({ status: prev, at: new Date().toISOString() })}\n\n`))
-        let closed = false
-        const iv = setInterval(() => {
-          if (closed) return
-          Effect.runPromise(
+        const send = (event: string, payload: string) => {
+          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${payload}\n\n`))
+        }
+        send("status", JSON.stringify({ status: previousStatus, at: new Date().toISOString() }))
+        interval = setInterval(() => {
+          if (closing) return
+          void Effect.runPromiseWith(services)(
             Effect.gen(function* () {
-              const cur = yield* registry.getDeploy(id as never).pipe(
-                Effect.catchTags({ DeployNotFound: () => Effect.succeed(undefined), RegistryError: () => Effect.succeed(undefined) })
-              )
-              const curStatus = (cur as { status?: string } | undefined)?.status
-              if (!curStatus) return
-              if (curStatus !== prev) {
-                prev = curStatus
-                controller.enqueue(encoder.encode(`event: status\ndata: ${JSON.stringify({ status: curStatus, at: new Date().toISOString() })}\n\n`))
+              const current = yield* Effect.option(registry.getDeploy(id))
+              if (Option.isNone(current)) return
+              const status = current.value.status
+              if (status !== previousStatus) {
+                previousStatus = status
+                send("status", JSON.stringify({ status, at: new Date().toISOString() }))
               } else {
-                controller.enqueue(encoder.encode(`event: ping\ndata: ${JSON.stringify({ at: new Date().toISOString() })}\n\n`))
+                send("ping", JSON.stringify({ at: new Date().toISOString() }))
               }
-              if (curStatus !== "running") {
+              if (status !== "running") {
+                clearInterval(interval)
                 setTimeout(() => {
-                  if (!closed) {
-                    controller.enqueue(encoder.encode(`event: done\ndata: {}\n\n`))
-                    try { controller.close() } catch {}
-                    closed = true
-                    clearInterval(iv)
-                  }
+                  if (closing) return
+                  closing = true
+                  send("done", "{}")
+                  closeController(controller)
                 }, 900)
-                clearInterval(iv)
               }
-            }).pipe(Effect.catch(() => Effect.void))
-          )
+            })
+          ).catch(() => {})
         }, 1000)
-        // allow GC
-        void closed
+      },
+      cancel() {
+        closing = true
+        if (interval !== undefined) clearInterval(interval)
       },
     })
-    return HttpServerResponse.raw(rs as unknown as Uint8Array, {
-      status: 200,
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-        ...corsHeaders,
-      },
-    })
+    return sseResponse(stream)
   }
 
   const mPromote = pathname.match(/^\/api\/deploys\/([^/]+)\/promote$/)
   if (mPromote && method === "POST") {
-    const id = decodeURIComponent(mPromote[1]!)
-    const rec = yield* registry.getDeploy(id as never).pipe(
-      Effect.catchTags({ DeployNotFound: () => Effect.succeed(undefined), RegistryError: () => Effect.succeed(undefined) })
-    )
-    if (!rec) return yield* notFound(`deploy ${id} not found`)
-    if ((rec as { status: string }).status !== "succeeded") return yield* text("only succeeded deploys can be promoted", 409)
-    yield* registry.setAlias((rec as { project: string }).project as never, "production", id as never).pipe(Effect.orElseSucceed(() => undefined))
+    const rawId = decodeURIComponent(mPromote[1]!)
+    const deployId = yield* Effect.option(Schema.decodeEffect(DeployId)(rawId))
+    if (Option.isNone(deployId)) return yield* notFound(`deploy ${rawId} not found`)
+    const record = yield* Effect.option(registry.getDeploy(deployId.value))
+    if (Option.isNone(record)) return yield* notFound(`deploy ${deployId.value} not found`)
+    if (record.value.status !== "succeeded") return yield* text("only succeeded deploys can be promoted", 409)
+    yield* registry.setAlias(record.value.project, "production", record.value.deployId).pipe(Effect.ignore)
     return yield* json({ ok: true })
   }
 
   const mRedeploy = pathname.match(/^\/api\/deploys\/([^/]+)\/redeploy$/)
   if (mRedeploy && method === "POST") {
-    const id = decodeURIComponent(mRedeploy[1]!)
-    const rec = yield* registry.getDeploy(id as never).pipe(
-      Effect.catchTags({ DeployNotFound: () => Effect.succeed(undefined), RegistryError: () => Effect.succeed(undefined) })
-    )
-    if (!rec) return yield* notFound(`deploy ${id} not found`)
-    let redeployPath: string | undefined
-    if (bodyText) {
-      try {
-        const parsed = JSON.parse(bodyText) as { path?: string }
-        redeployPath = parsed.path
-      } catch {}
+    const rawId = decodeURIComponent(mRedeploy[1]!)
+    const deployId = yield* Effect.option(Schema.decodeEffect(DeployId)(rawId))
+    if (Option.isNone(deployId)) return yield* notFound(`deploy ${rawId} not found`)
+    const record = yield* Effect.option(registry.getDeploy(deployId.value))
+    if (Option.isNone(record)) return yield* notFound(`deploy ${deployId.value} not found`)
+    const errorMessage = "redeploy requires { path } to local repo or github url"
+    if (bodyText === undefined) return yield* badRequest(errorMessage)
+    const parsedBody = yield* Effect.option(Effect.tryPromise(async () => JSON.parse(bodyText)))
+    if (Option.isNone(parsedBody)) return yield* badRequest(errorMessage)
+    const body = yield* Effect.option(Schema.decodeEffect(RedeployBody)(parsedBody.value))
+    if (Option.isNone(body)) return yield* badRequest(errorMessage)
+    const redeployPath = body.value.path
+    const deployService = yield* Effect.option(DeployService)
+    if (Option.isNone(deployService)) return yield* serverError("deploy service not available")
+    const outcome = yield* Effect.result(deployService.value.deploy(redeployPath))
+    if (Result.isSuccess(outcome)) return yield* json(outcome.success)
+    yield* Effect.logError(outcome.failure)
+    {
+      const deploys: ReadonlyArray<DeployRecord> = yield* registry.listDeploys().pipe(Effect.orElseSucceed(() => []))
+      const newest = [...deploys].sort(newestFirst)[0]
+      return yield* HttpServerResponse.json(
+        {
+          _tag: outcome.failure._tag,
+          message: errorDetail(outcome.failure),
+          path: redeployPath,
+          deployId: newest?.deployId,
+          project: newest?.project,
+          record: newest,
+        },
+        { status: 400 }
+      ).pipe(Effect.map(withCors), Effect.orDie)
     }
-    if (!redeployPath) return yield* badRequest("redeploy requires { path } to local repo or github url")
-    const deployService = yield* DeployService.pipe(Effect.orElseSucceed(() => undefined))
-    if (!deployService) return yield* serverError("deploy service not available")
-    const r = yield* deployService.deploy(redeployPath).pipe(
-      Effect.map((record) => ({ ok: true as const, record })),
-      Effect.catch((err) =>
-        Effect.gen(function* () {
-          yield* Effect.logError(err)
-          const all = yield* registry.listDeploys().pipe(Effect.orElseSucceed(() => [] as never))
-          const newest = [...all].sort((a, b) => +new Date(b.createdAt as unknown as string) - +new Date(a.createdAt as unknown as string))[0]
-          return { ok: false as const, err, record: newest }
-        })
-      )
-    )
-    if (r.ok) return yield* json(r.record)
-    const tag = (r.err as { _tag?: string })._tag ?? "DeployError"
-    const rawCause = (r.err as { cause?: unknown }).cause
-    const detail = rawCause instanceof Error ? rawCause.message : rawCause != null ? String(rawCause) : undefined
-    const msg = detail || (r.err as { message?: string }).message || String(r.err)
-    return yield* HttpServerResponse.json({ _tag: tag, message: msg, path: redeployPath, deployId: r.record?.deployId, project: r.record?.project, record: r.record }, { status: 400 }).pipe(
-      Effect.map(withCors),
-      Effect.orDie
-    )
   }
 
   if (pathname === "/api/deploy" && method === "POST") {
-    if (!bodyText) return yield* badRequest("missing body: { path }")
-    let payload: { path?: string; buildCommand?: string }
-    try {
-      payload = JSON.parse(bodyText) as typeof payload
-    } catch {
-      return yield* badRequest(`invalid JSON: ${bodyText.slice(0, 200)}`)
-    }
-    const deployPath = payload.path
-    if (!deployPath || typeof deployPath !== "string") return yield* badRequest("missing path")
-    const deployService = yield* DeployService.pipe(Effect.orElseSucceed(() => undefined))
-    if (!deployService) return yield* serverError("deploy service not available")
-    if (payload.buildCommand) {
-      const cfgPath = join(deployPath, "portal.config.json")
-      const exists = yield* fs.exists(cfgPath).pipe(Effect.orElseSucceed(() => false))
+    if (bodyText === undefined) return yield* badRequest("missing body: { path }")
+    const parsedBody = yield* Effect.option(Effect.tryPromise(async () => JSON.parse(bodyText)))
+    if (Option.isNone(parsedBody)) return yield* badRequest(`invalid JSON: ${bodyText.slice(0, 200)}`)
+    const payload = yield* Effect.option(Schema.decodeEffect(DeployBody)(parsedBody.value))
+    if (Option.isNone(payload)) return yield* badRequest("missing path")
+    const deployPath = payload.value.path
+    const deployService = yield* Effect.option(DeployService)
+    if (Option.isNone(deployService)) return yield* serverError("deploy service not available")
+    if (payload.value.buildCommand !== undefined) {
+      const configPath = join(deployPath, "portal.config.json")
+      const exists = yield* fs.exists(configPath).pipe(Effect.orElseSucceed(() => false))
       if (!exists) {
-        yield* fs.writeFileString(cfgPath, JSON.stringify({ buildCommand: payload.buildCommand }, null, 2)).pipe(Effect.orElseSucceed(() => undefined))
+        yield* fs.writeFileString(
+          configPath,
+          JSON.stringify({ buildCommand: payload.value.buildCommand }, null, 2)
+        ).pipe(Effect.ignore)
       }
     }
-    // Run synchronously so failures (ConfigInvalid, BuildFailed) are surfaced to the UI with a persisted failed deploy
-    const result = yield* deployService.deploy(deployPath).pipe(
-      Effect.map((record) => ({ ok: true as const, record })),
-      Effect.catch((err) =>
-        Effect.gen(function* () {
-          yield* Effect.logError(err)
-          const all = yield* registry.listDeploys().pipe(Effect.orElseSucceed(() => [] as never))
-          const newest = [...all].sort((a, b) => +new Date(b.createdAt as unknown as string) - +new Date(a.createdAt as unknown as string))[0]
-          return { ok: false as const, err, record: newest }
-        })
-      )
-    )
-    if (result.ok) return yield* json(result.record)
-    const errTag = (result.err as { _tag?: string })._tag ?? "DeployError"
-    const rawCause = (result.err as { cause?: unknown }).cause
-    const detail = rawCause instanceof Error ? rawCause.message : rawCause != null ? String(rawCause) : undefined
-    const errMsg = detail || (result.err as { message?: string }).message || String(result.err)
-    // Return the failed deploy so the frontend can link to /deploys/:id and show logs
-    return yield* HttpServerResponse.json(
-      { _tag: errTag, message: errMsg, path: deployPath, deployId: result.record?.deployId, project: result.record?.project, record: result.record },
-      { status: 400 }
-    ).pipe(Effect.map(withCors), Effect.orDie)
+    const outcome = yield* Effect.result(deployService.value.deploy(deployPath))
+    if (Result.isSuccess(outcome)) return yield* json(outcome.success)
+    yield* Effect.logError(outcome.failure)
+    {
+      const deploys: ReadonlyArray<DeployRecord> = yield* registry.listDeploys().pipe(Effect.orElseSucceed(() => []))
+      const newest = [...deploys].sort(newestFirst)[0]
+      return yield* HttpServerResponse.json(
+        {
+          _tag: outcome.failure._tag,
+          message: errorDetail(outcome.failure),
+          path: deployPath,
+          deployId: newest?.deployId,
+          project: newest?.project,
+          record: newest,
+        },
+        { status: 400 }
+      ).pipe(Effect.map(withCors), Effect.orDie)
+    }
   }
 
   if (pathname === "/api/health" && method === "GET") {
